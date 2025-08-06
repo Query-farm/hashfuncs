@@ -3,7 +3,6 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/main/extension_util.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/common/types/string_type.hpp"
 #include "xxhash.h"
@@ -566,100 +565,91 @@ inline void hashfunc_MurmurHash3_X64_128_with_seed(DataChunk &args, ExpressionSt
 
 } // namespace
 
-static void LoadInternal(DatabaseInstance &instance) {
+static void LoadInternal(ExtensionLoader &loader) {
 
 	auto xxh32_set = ScalarFunctionSet("xxh32");
 	xxh32_set.AddFunction(ScalarFunction("xxh32", {LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_XXH32));
 	xxh32_set.AddFunction(ScalarFunction("xxh32", {LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UINTEGER,
 	                                     hashfunc_XXH32_with_seed));
-	ExtensionUtil::RegisterFunction(instance, xxh32_set);
+	loader.RegisterFunction(xxh32_set);
 
 	auto xxh64_set = ScalarFunctionSet("xxh64");
 	xxh64_set.AddFunction(ScalarFunction("xxh64", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH64));
 	xxh64_set.AddFunction(ScalarFunction("xxh64", {LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT,
 	                                     hashfunc_XXH64_with_seed));
-	ExtensionUtil::RegisterFunction(instance, xxh64_set);
+	loader.RegisterFunction(xxh64_set);
 
 	auto xxh3_64_set = ScalarFunctionSet("xxh3_64");
 	xxh3_64_set.AddFunction(ScalarFunction("xxh3_64", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH3_64));
 	xxh3_64_set.AddFunction(ScalarFunction("xxh3_64", {LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT,
 	                                       hashfunc_XXH3_64_with_seed));
-	ExtensionUtil::RegisterFunction(instance, xxh3_64_set);
+	loader.RegisterFunction(xxh3_64_set);
 
 	auto xxh3_128_set = ScalarFunctionSet("xxh3_128");
 	xxh3_128_set.AddFunction(ScalarFunction("xxh3_128", {LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_XXH3_128));
 	xxh3_128_set.AddFunction(ScalarFunction("xxh3_128", {LogicalType::ANY, LogicalType::UHUGEINT},
 	                                        LogicalType::UHUGEINT, hashfunc_XXH3_128_with_seed));
-	ExtensionUtil::RegisterFunction(instance, xxh3_128_set);
+	loader.RegisterFunction(xxh3_128_set);
 
 	auto rapidhash_set = ScalarFunctionSet("rapidhash");
 	rapidhash_set.AddFunction(
 	    ScalarFunction("rapidhash", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhash));
 	rapidhash_set.AddFunction(ScalarFunction("rapidhash", {LogicalType::ANY, LogicalType::UBIGINT},
 	                                         LogicalType::UBIGINT, hashfunc_rapidhash_with_seed));
-	ExtensionUtil::RegisterFunction(instance, rapidhash_set);
+	loader.RegisterFunction(rapidhash_set);
 
 	// auto rapidhash_micro_set = ScalarFunctionSet("rapidhash_micro");
 	// rapidhash_micro_set.AddFunction(
 	//     ScalarFunction("rapidhash_micro", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhashMicro));
 	// rapidhash_micro_set.AddFunction(ScalarFunction("rapidhash_micro", {LogicalType::ANY, LogicalType::UBIGINT},
 	//                                                LogicalType::UBIGINT, hashfunc_rapidhashMicro_with_seed));
-	// ExtensionUtil::RegisterFunction(instance, rapidhash_micro_set);
+	// loader.RegisterFunction( rapidhash_micro_set);
 
 	// auto rapidhash_nano_set = ScalarFunctionSet("rapidhash_nano");
 	// rapidhash_nano_set.AddFunction(
 	//     ScalarFunction("rapidhash_nano", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhashNano));
 	// rapidhash_nano_set.AddFunction(ScalarFunction("rapidhash_nano", {LogicalType::ANY, LogicalType::UBIGINT},
 	//                                               LogicalType::UBIGINT, hashfunc_rapidhashNano_with_seed));
-	// ExtensionUtil::RegisterFunction(instance, rapidhash_nano_set);
+	// loader.RegisterFunction( rapidhash_nano_set);
 
 	auto murmurhash3_32_set = ScalarFunctionSet("murmurhash3_32");
 	murmurhash3_32_set.AddFunction(
 	    ScalarFunction("murmurhash3_32", {LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_MurmurHash3_32));
 	murmurhash3_32_set.AddFunction(ScalarFunction("murmurhash3_32", {LogicalType::ANY, LogicalType::UINTEGER},
 	                                              LogicalType::UINTEGER, hashfunc_MurmurHash3_32_with_seed));
-	ExtensionUtil::RegisterFunction(instance, murmurhash3_32_set);
+	loader.RegisterFunction(murmurhash3_32_set);
 
 	auto murmurhash3_128_set = ScalarFunctionSet("murmurhash3_128");
 	murmurhash3_128_set.AddFunction(
 	    ScalarFunction("murmurhash3_128", {LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_128));
 	murmurhash3_128_set.AddFunction(ScalarFunction("murmurhash3_128", {LogicalType::ANY, LogicalType::UHUGEINT},
 	                                               LogicalType::UHUGEINT, hashfunc_MurmurHash3_128_with_seed));
-	ExtensionUtil::RegisterFunction(instance, murmurhash3_128_set);
+	loader.RegisterFunction(murmurhash3_128_set);
 
 	auto murmurhash3_x64_128_set = ScalarFunctionSet("murmurhash3_x64_128");
 	murmurhash3_x64_128_set.AddFunction(
 	    ScalarFunction("murmurhash3_x64_128", {LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128));
 	murmurhash3_x64_128_set.AddFunction(ScalarFunction("murmurhash3_x64_128", {LogicalType::ANY, LogicalType::UHUGEINT},
 	                                                   LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128_with_seed));
-	ExtensionUtil::RegisterFunction(instance, murmurhash3_x64_128_set);
+	loader.RegisterFunction(murmurhash3_x64_128_set);
 }
 
-void HashfuncsExtension::Load(DuckDB &db) {
-	LoadInternal(*db.instance);
+void HashfuncsExtension::Load(ExtensionLoader &loader) {
+	LoadInternal(loader);
 }
 std::string HashfuncsExtension::Name() {
 	return "hashfuncs";
 }
 
 std::string HashfuncsExtension::Version() const {
-#ifdef EXT_VERSION_Hashfuncs
-	return EXT_VERSION_Hashfuncs;
-#else
-	return "";
-#endif
+	return "0.0.1";
 }
 
 } // namespace duckdb
 
 extern "C" {
 
-DUCKDB_EXTENSION_API void hashfuncs_init(duckdb::DatabaseInstance &db) {
-	duckdb::DuckDB db_wrapper(db);
-	db_wrapper.LoadExtension<duckdb::HashfuncsExtension>();
-}
-
-DUCKDB_EXTENSION_API const char *hashfuncs_version() {
-	return duckdb::DuckDB::LibraryVersion();
+DUCKDB_CPP_EXTENSION_ENTRY(hashfuncs, loader) {
+	duckdb::LoadInternal(loader);
 }
 }
