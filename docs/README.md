@@ -155,36 +155,6 @@ SELECT rapidhash('hello world', 2023);
 └────────────────────────────────┘
 ```
 
-#### `rapidhash_micro(data [, seed])`
-- **Returns**: `UBIGINT` (64-bit unsigned integer)
-- **Seed type**: `UBIGINT` (optional)
-- **Description**: Micro variant optimized for very small inputs
-
-```sql
-SELECT rapidhash_micro('test');
-┌─────────────────────────┐
-│ rapidhash_micro('test') │
-│         uint64          │
-├─────────────────────────┤
-│  16388600957843709845   │
-└─────────────────────────┘
-```
-
-#### `rapidhash_nano(data [, seed])`
-- **Returns**: `UBIGINT` (64-bit unsigned integer)
-- **Seed type**: `UBIGINT` (optional)
-- **Description**: Nano variant for extremely small inputs and maximum speed
-
-```sql
-SELECT rapidhash_nano('x');
-┌──────────────────────┐
-│ rapidhash_nano('x')  │
-│        uint64        │
-├──────────────────────┤
-│ 10123451328959537505 │
-└──────────────────────┘
-```
-
 ### MurmurHash3 Family
 
 **MurmurHash3** is a well-established non-cryptographic hash function known for good distribution and performance.

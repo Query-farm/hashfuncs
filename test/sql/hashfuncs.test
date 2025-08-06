@@ -1,0 +1,78 @@
+# name: test/sql/hashfuncs.test
+# description: test hashfuncs extension
+# group: [sql]
+
+# Require statement will ensure this test is run with this extension loaded
+require hashfuncs
+
+# Confirm the extension works
+query I
+SELECT xxh32('hello world');
+----
+3468387874
+
+query I
+SELECT xxh32('hello world', 42);
+----
+4225033588
+
+query I
+SELECT xxh64('hello world');
+----
+5020219685658847592
+
+query I
+SELECT xxh64('hello world', 12345);
+----
+15771590491225725957
+
+query I
+SELECT xxh3_64('hello world');
+----
+15296390279056496779
+
+query I
+SELECT xxh3_64('hello world', 999);
+----
+3002856137354040482
+
+query I
+SELECT xxh3_128('hello world');
+----
+225447084758876380551077147957698971904
+
+query I
+SELECT xxh3_128('hello world', 777);
+----
+283192007746380917896797379546610829141
+
+query I
+SELECT rapidhash('hello world');
+----
+3397907815814400320
+
+query I
+SELECT rapidhash('hello world', 2023);
+----
+11789095433300219990
+
+query I
+SELECT murmurhash3_32('hello world');
+----
+1586663183
+
+query I
+SELECT murmurhash3_32('hello world', 123);
+----
+679062093
+
+query I
+SELECT murmurhash3_128('hello world');
+----
+206095855024402301784664199839047883400
+
+query I
+SELECT murmurhash3_x64_128('hello world');
+----
+228083453807047072434243676435732455694
+
