@@ -1,6 +1,8 @@
 {
         "dependencies": [
-                "openssl"
+                "xxhash",
+                "rapidhash",
+                "murmurhash"
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [

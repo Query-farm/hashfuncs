@@ -1,23 +1,23 @@
-# name: test/sql/quack.test
-# description: test quack extension
+# name: test/sql/hashfuncs.test
+# description: test hashfuncs extension
 # group: [sql]
 
 # Before we load the extension, this will fail
 statement error
-SELECT quack('Sam');
+SELECT hashfuncs('Sam');
 ----
-Catalog Error: Scalar Function with name quack does not exist!
+Catalog Error: Scalar Function with name hashfuncs does not exist!
 
 # Require statement will ensure this test is run with this extension loaded
-require quack
+require hashfuncs
 
 # Confirm the extension works
 query I
-SELECT quack('Sam');
+SELECT hashfuncs('Sam');
 ----
-Quack Sam 🐥
+Hashfuncs Sam 🐥
 
 query I
-SELECT quack_openssl_version('Michael') ILIKE 'Quack Michael, my linked OpenSSL version is OpenSSL%';
+SELECT hashfuncs_openssl_version('Michael') ILIKE 'Hashfuncs Michael, my linked OpenSSL version is OpenSSL%';
 ----
 true
