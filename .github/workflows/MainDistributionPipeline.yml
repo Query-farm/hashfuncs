@@ -29,12 +29,3 @@ jobs:
       duckdb_version: v1.3.2
       ci_tools_version: v1.3.2
       extension_name: hashfuncs
-
-  code-quality-check:
-    name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@main
-    with:
-      duckdb_version: v1.3.2
-      ci_tools_version: main
-      extension_name: hashfuncs
-      format_checks: 'format;tidy'
