@@ -1,6 +1,6 @@
 # Hashfuncs (hash functions) Extension for DuckDB
 
-This `hashfuncs` extension adds functions for computing hash values from data.
+The **Hashfuncs** extension, developed by **[Query.Farm](https://query.farm)**, adds non-cryptographic hash functions to DuckDB.
 
 ## Installation
 
@@ -17,10 +17,14 @@ load hashfuncs;
 
 Hashing is a process that transforms input data of any size into a fixed-size output, which is typically a hash value or hash code. Hash functions are designed to be fast, deterministic (same input always produces the same output), and distribute hash values uniformly across the output space.
 
-Non cryptogrpahic hash functions are commonly used for:
+Non cryptographic hash functions are commonly used for:
+
 - **Database indexing**: Creating efficient lookup structures
+
 - **Partitioning data**: Distributing data across multiple nodes or buckets
+
 - **Caching**: Creating cache keys
+
 - **Bloom filters**: Probabilistic data structures for membership testing
 
 ## Available Hash Functions
