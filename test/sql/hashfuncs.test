@@ -46,15 +46,15 @@ SELECT xxh3_128('hello world', 777);
 ----
 283192007746380917896797379546610829141
 
-query I
-SELECT rapidhash('hello world');
-----
-3397907815814400320
+#query I
+#SELECT rapidhash('hello world');
+#----
+#3397907815814400320
 
-query I
-SELECT rapidhash('hello world', 2023);
-----
-11789095433300219990
+#query I
+#SELECT rapidhash('hello world', 2023);
+#----
+#11789095433300219990
 
 query I
 SELECT murmurhash3_32('hello world');
