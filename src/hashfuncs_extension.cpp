@@ -20,8 +20,8 @@ enum class HashAlgorithm {
 	XXH3_64,
 	XXH3_128,
 	RAPIDHASH,
-	RAPIDHASH_MICRO,
-	RAPIDHASH_NANO,
+	//	RAPIDHASH_MICRO,
+	//	RAPIDHASH_NANO,
 	MURMURHASH3_32,
 	MURMURHASH3_128,
 	MURMURHASH3_X64_128
@@ -60,15 +60,15 @@ struct hash_seed_type<HashAlgorithm::RAPIDHASH> {
 	using type = uint64_t; // RapidHash typically uses 64-bit seed
 };
 
-template <>
-struct hash_seed_type<HashAlgorithm::RAPIDHASH_MICRO> {
-	using type = uint64_t; // RapidHash micro variant
-};
+// template <>
+// struct hash_seed_type<HashAlgorithm::RAPIDHASH_MICRO> {
+// 	using type = uint64_t; // RapidHash micro variant
+// };
 
-template <>
-struct hash_seed_type<HashAlgorithm::RAPIDHASH_NANO> {
-	using type = uint64_t; // RapidHash nano variant
-};
+// template <>
+// struct hash_seed_type<HashAlgorithm::RAPIDHASH_NANO> {
+// 	using type = uint64_t; // RapidHash nano variant
+// };
 
 template <>
 struct hash_seed_type<HashAlgorithm::MURMURHASH3_32> {
@@ -116,12 +116,12 @@ inline void hash_fixed_type_generic_with_seed(const UnifiedVectorFormat &input_v
 		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
 			// 64-bit hash using RapidHash
 			results[i] = rapidhash_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
-		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-			// 64-bit hash using RapidHash Micro
-			results[i] = rapidhashMicro_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
-		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-			// 64-bit hash using RapidHash Nano
-			results[i] = rapidhashNano_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
+			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
+			// 	// 64-bit hash using RapidHash Micro
+			// 	results[i] = rapidhashMicro_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
+			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
+			// 	// 64-bit hash using RapidHash Nano
+			// 	results[i] = rapidhashNano_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
 			// 32-bit hash using MurmurHash3
 			MurmurHash3_x86_32(&inputs[i], sizeof(TargetType), seeds[i], &results[i]);
@@ -163,12 +163,12 @@ inline void hash_fixed_type_generic(const UnifiedVectorFormat &vdata, const idx_
 		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
 			// 64-bit hash using RapidHash
 			results[i] = rapidhash(&inputs[i], sizeof(TargetType));
-		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-			// 64-bit hash using RapidHash Micro
-			results[i] = rapidhashMicro(&inputs[i], sizeof(TargetType));
-		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-			// 64-bit hash using RapidHash Nano
-			results[i] = rapidhashNano(&inputs[i], sizeof(TargetType));
+			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
+			// 	// 64-bit hash using RapidHash Micro
+			// 	results[i] = rapidhashMicro(&inputs[i], sizeof(TargetType));
+			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
+			// 	// 64-bit hash using RapidHash Nano
+			// 	results[i] = rapidhashNano(&inputs[i], sizeof(TargetType));
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
 			// 32-bit hash using MurmurHash3
 			MurmurHash3_x86_32(&inputs[i], sizeof(TargetType), 0, &results[i]);
@@ -228,10 +228,10 @@ inline void hashfunc_generic(DataChunk &args, ExpressionState &state, Vector &re
 				results[i] = XXH3_64bits(str.GetData(), str.GetSize());
 			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
 				results[i] = rapidhash(str.GetData(), str.GetSize());
-			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-				results[i] = rapidhashMicro(str.GetData(), str.GetSize());
-			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-				results[i] = rapidhashNano(str.GetData(), str.GetSize());
+				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
+				// 	results[i] = rapidhashMicro(str.GetData(), str.GetSize());
+				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
+				// 	results[i] = rapidhashNano(str.GetData(), str.GetSize());
 			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
 				// 32-bit hash using MurmurHash3
 				MurmurHash3_x86_32(str.GetData(), str.GetSize(), 0, &results[i]);
@@ -376,10 +376,10 @@ inline void hashfunc_generic_with_seed(DataChunk &args, ExpressionState &state, 
 				results[i] = XXH3_64bits_withSeed(str.GetData(), str.GetSize(), seeds[i]);
 			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
 				results[i] = rapidhash_withSeed(str.GetData(), str.GetSize(), seeds[i]);
-			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-				results[i] = rapidhashMicro_withSeed(str.GetData(), str.GetSize(), seeds[i]);
-			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-				results[i] = rapidhashNano_withSeed(str.GetData(), str.GetSize(), seeds[i]);
+				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
+				// 	results[i] = rapidhashMicro_withSeed(str.GetData(), str.GetSize(), seeds[i]);
+				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
+				// 	results[i] = rapidhashNano_withSeed(str.GetData(), str.GetSize(), seeds[i]);
 			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
 				// 32-bit hash using MurmurHash3
 				MurmurHash3_x86_32(str.GetData(), str.GetSize(), seeds[i], &results[i]);
@@ -524,21 +524,21 @@ inline void hashfunc_rapidhash_with_seed(DataChunk &args, ExpressionState &state
 	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::RAPIDHASH>(args, state, result);
 }
 
-inline void hashfunc_rapidhashMicro(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uint64_t, HashAlgorithm::RAPIDHASH_MICRO>(args, state, result);
-}
+// inline void hashfunc_rapidhashMicro(DataChunk &args, ExpressionState &state, Vector &result) {
+// 	hashfunc_generic<uint64_t, HashAlgorithm::RAPIDHASH_MICRO>(args, state, result);
+// }
 
-inline void hashfunc_rapidhashMicro_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::RAPIDHASH_MICRO>(args, state, result);
-}
+// inline void hashfunc_rapidhashMicro_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
+// 	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::RAPIDHASH_MICRO>(args, state, result);
+// }
 
-inline void hashfunc_rapidhashNano(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uint64_t, HashAlgorithm::RAPIDHASH_NANO>(args, state, result);
-}
+// inline void hashfunc_rapidhashNano(DataChunk &args, ExpressionState &state, Vector &result) {
+// 	hashfunc_generic<uint64_t, HashAlgorithm::RAPIDHASH_NANO>(args, state, result);
+// }
 
-inline void hashfunc_rapidhashNano_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::RAPIDHASH_NANO>(args, state, result);
-}
+// inline void hashfunc_rapidhashNano_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
+// 	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::RAPIDHASH_NANO>(args, state, result);
+// }
 
 inline void hashfunc_MurmurHash3_32(DataChunk &args, ExpressionState &state, Vector &result) {
 	hashfunc_generic<uint32_t, HashAlgorithm::MURMURHASH3_32>(args, state, result);
@@ -599,19 +599,19 @@ static void LoadInternal(DatabaseInstance &instance) {
 	                                         LogicalType::UBIGINT, hashfunc_rapidhash_with_seed));
 	ExtensionUtil::RegisterFunction(instance, rapidhash_set);
 
-	auto rapidhash_micro_set = ScalarFunctionSet("rapidhash_micro");
-	rapidhash_micro_set.AddFunction(
-	    ScalarFunction("rapidhash_micro", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhashMicro));
-	rapidhash_micro_set.AddFunction(ScalarFunction("rapidhash_micro", {LogicalType::ANY, LogicalType::UBIGINT},
-	                                               LogicalType::UBIGINT, hashfunc_rapidhashMicro_with_seed));
-	ExtensionUtil::RegisterFunction(instance, rapidhash_micro_set);
+	// auto rapidhash_micro_set = ScalarFunctionSet("rapidhash_micro");
+	// rapidhash_micro_set.AddFunction(
+	//     ScalarFunction("rapidhash_micro", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhashMicro));
+	// rapidhash_micro_set.AddFunction(ScalarFunction("rapidhash_micro", {LogicalType::ANY, LogicalType::UBIGINT},
+	//                                                LogicalType::UBIGINT, hashfunc_rapidhashMicro_with_seed));
+	// ExtensionUtil::RegisterFunction(instance, rapidhash_micro_set);
 
-	auto rapidhash_nano_set = ScalarFunctionSet("rapidhash_nano");
-	rapidhash_nano_set.AddFunction(
-	    ScalarFunction("rapidhash_nano", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhashNano));
-	rapidhash_nano_set.AddFunction(ScalarFunction("rapidhash_nano", {LogicalType::ANY, LogicalType::UBIGINT},
-	                                              LogicalType::UBIGINT, hashfunc_rapidhashNano_with_seed));
-	ExtensionUtil::RegisterFunction(instance, rapidhash_nano_set);
+	// auto rapidhash_nano_set = ScalarFunctionSet("rapidhash_nano");
+	// rapidhash_nano_set.AddFunction(
+	//     ScalarFunction("rapidhash_nano", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhashNano));
+	// rapidhash_nano_set.AddFunction(ScalarFunction("rapidhash_nano", {LogicalType::ANY, LogicalType::UBIGINT},
+	//                                               LogicalType::UBIGINT, hashfunc_rapidhashNano_with_seed));
+	// ExtensionUtil::RegisterFunction(instance, rapidhash_nano_set);
 
 	auto murmurhash3_32_set = ScalarFunctionSet("murmurhash3_32");
 	murmurhash3_32_set.AddFunction(
