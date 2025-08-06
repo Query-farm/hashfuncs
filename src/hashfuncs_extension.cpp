@@ -588,8 +588,8 @@ static void LoadInternal(DatabaseInstance &instance) {
 
 	auto xxh3_128_set = ScalarFunctionSet("xxh3_128");
 	xxh3_128_set.AddFunction(ScalarFunction("xxh3_128", {LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_XXH3_128));
-	xxh3_128_set.AddFunction(ScalarFunction("xxh3_128", {LogicalType::ANY, LogicalType::UHUGEINT},
-	                                        LogicalType::UHUGEINT, hashfunc_XXH3_128_with_seed));
+	xxh3_128_set.AddFunction(ScalarFunction("xxh3_128", {LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UHUGEINT,
+	                                        hashfunc_XXH3_128_with_seed));
 	ExtensionUtil::RegisterFunction(instance, xxh3_128_set);
 
 	auto rapidhash_set = ScalarFunctionSet("rapidhash");
