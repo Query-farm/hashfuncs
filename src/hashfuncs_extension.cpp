@@ -8,7 +8,7 @@
 #include "xxhash.h"
 #include "rapidhash.h"
 #include "MurmurHash3.h"
-
+#include "query_farm_telemetry.hpp"
 namespace duckdb {
 
 namespace {
@@ -632,6 +632,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	murmurhash3_x64_128_set.AddFunction(ScalarFunction("murmurhash3_x64_128", {LogicalType::ANY, LogicalType::UHUGEINT},
 	                                                   LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128_with_seed));
 	loader.RegisterFunction(murmurhash3_x64_128_set);
+
+	QueryFarmSendTelemetry(loader, instance.shared_from_this(), "hashfuncs", "2025092301");
 }
 
 void HashfuncsExtension::Load(ExtensionLoader &loader) {
@@ -642,7 +644,7 @@ std::string HashfuncsExtension::Name() {
 }
 
 std::string HashfuncsExtension::Version() const {
-	return "0.0.1";
+	return "2025092301";
 }
 
 } // namespace duckdb
