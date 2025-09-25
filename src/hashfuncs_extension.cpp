@@ -103,36 +103,38 @@ inline void hash_fixed_type_generic_with_seed(const UnifiedVectorFormat &input_v
 			continue;
 		}
 
+		const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
+
 		if constexpr (Algorithm == HashAlgorithm::XXH32) {
 			// 32-bit hash using XXH32
-			results[i] = XXH32(&inputs[i], sizeof(TargetType), seeds[i]);
+			results[i] = XXH32(&inputs[i], sizeof(TargetType), seed_value);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH64) {
 			// 64-bit hash using XXH64
-			results[i] = XXH64(&inputs[i], sizeof(TargetType), seeds[i]);
+			results[i] = XXH64(&inputs[i], sizeof(TargetType), seed_value);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH3_64) {
 			// 64-bit hash using XXH3
-			results[i] = XXH3_64bits_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
+			results[i] = XXH3_64bits_withSeed(&inputs[i], sizeof(TargetType), seed_value);
 		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
 			// 64-bit hash using RapidHash
-			results[i] = rapidhash_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
+			results[i] = rapidhash_withSeed(&inputs[i], sizeof(TargetType), seed_value);
 			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
 			// 	// 64-bit hash using RapidHash Micro
-			// 	results[i] = rapidhashMicro_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
+			// 	results[i] = rapidhashMicro_withSeed(&inputs[i], sizeof(TargetType), seed_value);
 			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
 			// 	// 64-bit hash using RapidHash Nano
-			// 	results[i] = rapidhashNano_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
+			// 	results[i] = rapidhashNano_withSeed(&inputs[i], sizeof(TargetType), seed_value);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
 			// 32-bit hash using MurmurHash3
-			MurmurHash3_x86_32(&inputs[i], sizeof(TargetType), seeds[i], &results[i]);
+			MurmurHash3_x86_32(&inputs[i], sizeof(TargetType), seed_value, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_128) {
 			// 128-bit hash using MurmurHash3
-			MurmurHash3_x86_128(&inputs[i], sizeof(TargetType), seeds[i], &results[i]);
+			MurmurHash3_x86_128(&inputs[i], sizeof(TargetType), seed_value, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_X64_128) {
 			// 128-bit hash using MurmurHash3 x64
-			MurmurHash3_x64_128(&inputs[i], sizeof(TargetType), seeds[i], &results[i]);
+			MurmurHash3_x64_128(&inputs[i], sizeof(TargetType), seed_value, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH3_128) {
 			// 128-bit hash
-			XXH128_hash_t hash128 = XXH3_128bits_withSeed(&inputs[i], sizeof(TargetType), seeds[i]);
+			XXH128_hash_t hash128 = XXH3_128bits_withSeed(&inputs[i], sizeof(TargetType), seed_value);
 			results[i] = uhugeint_t {hash128.low64, hash128.high64};
 		}
 	}
@@ -365,32 +367,34 @@ inline void hashfunc_generic_with_seed(DataChunk &args, ExpressionState &state, 
 			}
 			const auto &str = inputs[i];
 
+			const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
+
 			if constexpr (Algorithm == HashAlgorithm::XXH32) {
 				// 32-bit hash using XXH32
-				results[i] = XXH32(str.GetData(), str.GetSize(), seeds[i]);
+				results[i] = XXH32(str.GetData(), str.GetSize(), seed_value);
 			} else if constexpr (Algorithm == HashAlgorithm::XXH64) {
 				// 64-bit hash using XXH64
-				results[i] = XXH64(str.GetData(), str.GetSize(), seeds[i]);
+				results[i] = XXH64(str.GetData(), str.GetSize(), seed_value);
 			} else if constexpr (Algorithm == HashAlgorithm::XXH3_64) {
-				results[i] = XXH3_64bits_withSeed(str.GetData(), str.GetSize(), seeds[i]);
+				results[i] = XXH3_64bits_withSeed(str.GetData(), str.GetSize(), seed_value);
 			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
-				results[i] = rapidhash_withSeed(str.GetData(), str.GetSize(), seeds[i]);
+				results[i] = rapidhash_withSeed(str.GetData(), str.GetSize(), seed_value);
 				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-				// 	results[i] = rapidhashMicro_withSeed(str.GetData(), str.GetSize(), seeds[i]);
+				// 	results[i] = rapidhashMicro_withSeed(str.GetData(), str.GetSize(), seed_value);
 				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-				// 	results[i] = rapidhashNano_withSeed(str.GetData(), str.GetSize(), seeds[i]);
+				// 	results[i] = rapidhashNano_withSeed(str.GetData(), str.GetSize(), seed_value);
 			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
 				// 32-bit hash using MurmurHash3
-				MurmurHash3_x86_32(str.GetData(), str.GetSize(), seeds[i], &results[i]);
+				MurmurHash3_x86_32(str.GetData(), str.GetSize(), seed_value, &results[i]);
 			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_128) {
 				// 128-bit hash using MurmurHash3
-				MurmurHash3_x86_128(str.GetData(), str.GetSize(), seeds[i], &results[i]);
+				MurmurHash3_x86_128(str.GetData(), str.GetSize(), seed_value, &results[i]);
 			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_X64_128) {
 				// 128-bit hash using MurmurHash3 x64
-				MurmurHash3_x64_128(str.GetData(), str.GetSize(), seeds[i], &results[i]);
+				MurmurHash3_x64_128(str.GetData(), str.GetSize(), seed_value, &results[i]);
 			} else if constexpr (Algorithm == HashAlgorithm::XXH3_128) {
 				// 128-bit hash
-				XXH128_hash_t hash128 = XXH3_128bits_withSeed(str.GetData(), str.GetSize(), seeds[i]);
+				XXH128_hash_t hash128 = XXH3_128bits_withSeed(str.GetData(), str.GetSize(), seed_value);
 				results[i] = uhugeint_t {hash128.low64, hash128.high64};
 			}
 		}
@@ -633,7 +637,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                                   LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128_with_seed));
 	loader.RegisterFunction(murmurhash3_x64_128_set);
 
-	QueryFarmSendTelemetry(loader, instance.shared_from_this(), "hashfuncs", "2025092301");
+	QueryFarmSendTelemetry(loader, loader.GetDatabaseInstance().shared_from_this(), "hashfuncs", "2025092501");
 }
 
 void HashfuncsExtension::Load(ExtensionLoader &loader) {
@@ -644,7 +648,7 @@ std::string HashfuncsExtension::Name() {
 }
 
 std::string HashfuncsExtension::Version() const {
-	return "2025092301";
+	return "2025092501";
 }
 
 } // namespace duckdb

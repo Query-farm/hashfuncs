@@ -76,3 +76,59 @@ SELECT murmurhash3_x64_128('hello world');
 ----
 228083453807047072434243676435732455694
 
+query I
+SELECT xxh3_64('hello world', 1)
+----
+13235715547166781229
+
+statement ok
+CREATE TABLE test_values(
+  val text
+)
+
+statement ok
+INSERT INTO test_values (val) VALUES
+('A3f9xZ'),
+('hello_world'),
+('q''weRtY'),
+('42!cat$'),
+('sql_test_01'),
+('Xx''danger''xX'),
+('n9m2K8L7'),
+('simple_text'),
+('p@ssw0rd!'),
+('UPPERlowerMix'),
+('duck_db''rocks'),
+('fuzzy-match%'),
+('end2end_case'),
+('JUMP!_high'),
+('trail_space '),
+('line_break\nok'),
+('O''Reilly_book'),
+('hash#tag123'),
+('escape\\slash'),
+('final_value!');
+
+query I
+SELECT xxh3_64(val, 1) from test_values
+----
+9754535182523702330
+11661378664393350035
+8109071181876277224
+16234135117497592658
+2927978092978827887
+16750940650443631283
+7119428214417206077
+4210528920377293408
+5869958256225688692
+1161672286215593427
+6976703038538397740
+2407943583849160645
+13712770218863691053
+3300961290780186348
+12347262961048241831
+4327665800250596801
+18230737118419112974
+5556604607352908546
+10347174678819671130
+2012751273537724327
