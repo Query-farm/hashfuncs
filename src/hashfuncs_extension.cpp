@@ -633,7 +633,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                                   LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128_with_seed));
 	loader.RegisterFunction(murmurhash3_x64_128_set);
 
-	QueryFarmSendTelemetry(loader, instance.shared_from_this(), "hashfuncs", "2025092301");
+	QueryFarmSendTelemetry(loader, "hashfuncs", "2025092301");
 }
 
 void HashfuncsExtension::Load(ExtensionLoader &loader) {
