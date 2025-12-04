@@ -571,73 +571,174 @@ inline void hashfunc_MurmurHash3_X64_128_with_seed(DataChunk &args, ExpressionSt
 
 static void LoadInternal(ExtensionLoader &loader) {
 
-	auto xxh32_set = ScalarFunctionSet("xxh32");
-	xxh32_set.AddFunction(ScalarFunction("xxh32", {LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_XXH32));
-	xxh32_set.AddFunction(ScalarFunction("xxh32", {LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UINTEGER,
-	                                     hashfunc_XXH32_with_seed));
-	loader.RegisterFunction(xxh32_set);
+	// XXH32 - 32-bit xxHash
+	ScalarFunctionSet xxh32_set("xxh32");
+	xxh32_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_XXH32));
+	xxh32_set.AddFunction(
+	    ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UINTEGER, hashfunc_XXH32_with_seed));
+	CreateScalarFunctionInfo xxh32_info(xxh32_set);
+	xxh32_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */ "Computes a 32-bit xxHash (XXH32) non-cryptographic hash of the input",
+	     /* examples */ {"xxh32('hello')"},
+	     /* categories */ {"hash"}});
+	xxh32_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UINTEGER},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */ "Computes a 32-bit xxHash (XXH32) non-cryptographic hash of the input with a seed",
+	     /* examples */ {"xxh32('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(xxh32_info);
 
-	auto xxh64_set = ScalarFunctionSet("xxh64");
-	xxh64_set.AddFunction(ScalarFunction("xxh64", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH64));
-	xxh64_set.AddFunction(ScalarFunction("xxh64", {LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT,
-	                                     hashfunc_XXH64_with_seed));
-	loader.RegisterFunction(xxh64_set);
+	// XXH64 - 64-bit xxHash
+	ScalarFunctionSet xxh64_set("xxh64");
+	xxh64_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH64));
+	xxh64_set.AddFunction(
+	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_XXH64_with_seed));
+	CreateScalarFunctionInfo xxh64_info(xxh64_set);
+	xxh64_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */ "Computes a 64-bit xxHash (XXH64) non-cryptographic hash of the input",
+	     /* examples */ {"xxh64('hello')"},
+	     /* categories */ {"hash"}});
+	xxh64_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UBIGINT},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */ "Computes a 64-bit xxHash (XXH64) non-cryptographic hash of the input with a seed",
+	     /* examples */ {"xxh64('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(xxh64_info);
 
-	auto xxh3_64_set = ScalarFunctionSet("xxh3_64");
-	xxh3_64_set.AddFunction(ScalarFunction("xxh3_64", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH3_64));
-	xxh3_64_set.AddFunction(ScalarFunction("xxh3_64", {LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT,
-	                                       hashfunc_XXH3_64_with_seed));
-	loader.RegisterFunction(xxh3_64_set);
+	// XXH3_64 - 64-bit xxHash3 (faster than XXH64 for short inputs)
+	ScalarFunctionSet xxh3_64_set("xxh3_64");
+	xxh3_64_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH3_64));
+	xxh3_64_set.AddFunction(
+	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_XXH3_64_with_seed));
+	CreateScalarFunctionInfo xxh3_64_info(xxh3_64_set);
+	xxh3_64_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */
+	     "Computes a 64-bit xxHash3 (XXH3_64) non-cryptographic hash of the input. Faster than XXH64 for short inputs",
+	     /* examples */ {"xxh3_64('hello')"},
+	     /* categories */ {"hash"}});
+	xxh3_64_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UBIGINT},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */ "Computes a 64-bit xxHash3 (XXH3_64) non-cryptographic hash of the input with a seed",
+	     /* examples */ {"xxh3_64('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(xxh3_64_info);
 
-	auto xxh3_128_set = ScalarFunctionSet("xxh3_128");
-	xxh3_128_set.AddFunction(ScalarFunction("xxh3_128", {LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_XXH3_128));
-	xxh3_128_set.AddFunction(ScalarFunction("xxh3_128", {LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UHUGEINT,
-	                                        hashfunc_XXH3_128_with_seed));
-	loader.RegisterFunction(xxh3_128_set);
+	// XXH3_128 - 128-bit xxHash3
+	ScalarFunctionSet xxh3_128_set("xxh3_128");
+	xxh3_128_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_XXH3_128));
+	xxh3_128_set.AddFunction(
+	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UHUGEINT, hashfunc_XXH3_128_with_seed));
+	CreateScalarFunctionInfo xxh3_128_info(xxh3_128_set);
+	xxh3_128_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */ "Computes a 128-bit xxHash3 (XXH3_128) non-cryptographic hash of the input",
+	     /* examples */ {"xxh3_128('hello')"},
+	     /* categories */ {"hash"}});
+	xxh3_128_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UBIGINT},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */ "Computes a 128-bit xxHash3 (XXH3_128) non-cryptographic hash of the input with a seed",
+	     /* examples */ {"xxh3_128('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(xxh3_128_info);
 
-	auto rapidhash_set = ScalarFunctionSet("rapidhash");
+	// RapidHash - fast 64-bit hash
+	ScalarFunctionSet rapidhash_set("rapidhash");
+	rapidhash_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhash));
 	rapidhash_set.AddFunction(
-	    ScalarFunction("rapidhash", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhash));
-	rapidhash_set.AddFunction(ScalarFunction("rapidhash", {LogicalType::ANY, LogicalType::UBIGINT},
-	                                         LogicalType::UBIGINT, hashfunc_rapidhash_with_seed));
-	loader.RegisterFunction(rapidhash_set);
+	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_rapidhash_with_seed));
+	CreateScalarFunctionInfo rapidhash_info(rapidhash_set);
+	rapidhash_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */
+	     "Computes a 64-bit RapidHash non-cryptographic hash of the input. Very fast for all input sizes",
+	     /* examples */ {"rapidhash('hello')"},
+	     /* categories */ {"hash"}});
+	rapidhash_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UBIGINT},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */ "Computes a 64-bit RapidHash non-cryptographic hash of the input with a seed",
+	     /* examples */ {"rapidhash('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(rapidhash_info);
 
-	// auto rapidhash_micro_set = ScalarFunctionSet("rapidhash_micro");
-	// rapidhash_micro_set.AddFunction(
-	//     ScalarFunction("rapidhash_micro", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhashMicro));
-	// rapidhash_micro_set.AddFunction(ScalarFunction("rapidhash_micro", {LogicalType::ANY, LogicalType::UBIGINT},
-	//                                                LogicalType::UBIGINT, hashfunc_rapidhashMicro_with_seed));
-	// loader.RegisterFunction( rapidhash_micro_set);
+	// MurmurHash3 32-bit
+	ScalarFunctionSet murmurhash3_32_set("murmurhash3_32");
+	murmurhash3_32_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_MurmurHash3_32));
+	murmurhash3_32_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UINTEGER,
+	                                              hashfunc_MurmurHash3_32_with_seed));
+	CreateScalarFunctionInfo murmurhash3_32_info(murmurhash3_32_set);
+	murmurhash3_32_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */ "Computes a 32-bit MurmurHash3 non-cryptographic hash of the input",
+	     /* examples */ {"murmurhash3_32('hello')"},
+	     /* categories */ {"hash"}});
+	murmurhash3_32_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UINTEGER},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */ "Computes a 32-bit MurmurHash3 non-cryptographic hash of the input with a seed",
+	     /* examples */ {"murmurhash3_32('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(murmurhash3_32_info);
 
-	// auto rapidhash_nano_set = ScalarFunctionSet("rapidhash_nano");
-	// rapidhash_nano_set.AddFunction(
-	//     ScalarFunction("rapidhash_nano", {LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhashNano));
-	// rapidhash_nano_set.AddFunction(ScalarFunction("rapidhash_nano", {LogicalType::ANY, LogicalType::UBIGINT},
-	//                                               LogicalType::UBIGINT, hashfunc_rapidhashNano_with_seed));
-	// loader.RegisterFunction( rapidhash_nano_set);
-
-	auto murmurhash3_32_set = ScalarFunctionSet("murmurhash3_32");
-	murmurhash3_32_set.AddFunction(
-	    ScalarFunction("murmurhash3_32", {LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_MurmurHash3_32));
-	murmurhash3_32_set.AddFunction(ScalarFunction("murmurhash3_32", {LogicalType::ANY, LogicalType::UINTEGER},
-	                                              LogicalType::UINTEGER, hashfunc_MurmurHash3_32_with_seed));
-	loader.RegisterFunction(murmurhash3_32_set);
-
-	auto murmurhash3_128_set = ScalarFunctionSet("murmurhash3_128");
+	// MurmurHash3 128-bit (x86 variant)
+	ScalarFunctionSet murmurhash3_128_set("murmurhash3_128");
 	murmurhash3_128_set.AddFunction(
-	    ScalarFunction("murmurhash3_128", {LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_128));
-	murmurhash3_128_set.AddFunction(ScalarFunction("murmurhash3_128", {LogicalType::ANY, LogicalType::UHUGEINT},
-	                                               LogicalType::UHUGEINT, hashfunc_MurmurHash3_128_with_seed));
-	loader.RegisterFunction(murmurhash3_128_set);
+	    ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_128));
+	murmurhash3_128_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UHUGEINT,
+	                                               hashfunc_MurmurHash3_128_with_seed));
+	CreateScalarFunctionInfo murmurhash3_128_info(murmurhash3_128_set);
+	murmurhash3_128_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */ "Computes a 128-bit MurmurHash3 (x86 variant) non-cryptographic hash of the input",
+	     /* examples */ {"murmurhash3_128('hello')"},
+	     /* categories */ {"hash"}});
+	murmurhash3_128_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UINTEGER},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */ "Computes a 128-bit MurmurHash3 (x86 variant) non-cryptographic hash of the input with a seed",
+	     /* examples */ {"murmurhash3_128('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(murmurhash3_128_info);
 
-	auto murmurhash3_x64_128_set = ScalarFunctionSet("murmurhash3_x64_128");
+	// MurmurHash3 128-bit (x64 variant - optimized for 64-bit platforms)
+	ScalarFunctionSet murmurhash3_x64_128_set("murmurhash3_x64_128");
 	murmurhash3_x64_128_set.AddFunction(
-	    ScalarFunction("murmurhash3_x64_128", {LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128));
-	murmurhash3_x64_128_set.AddFunction(ScalarFunction("murmurhash3_x64_128", {LogicalType::ANY, LogicalType::UHUGEINT},
-	                                                   LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128_with_seed));
-	loader.RegisterFunction(murmurhash3_x64_128_set);
+	    ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128));
+	murmurhash3_x64_128_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UHUGEINT,
+	                                                   hashfunc_MurmurHash3_X64_128_with_seed));
+	CreateScalarFunctionInfo murmurhash3_x64_128_info(murmurhash3_x64_128_set);
+	murmurhash3_x64_128_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */
+	     "Computes a 128-bit MurmurHash3 (x64 variant) non-cryptographic hash of the input. Optimized for 64-bit "
+	     "platforms",
+	     /* examples */ {"murmurhash3_x64_128('hello')"},
+	     /* categories */ {"hash"}});
+	murmurhash3_x64_128_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UINTEGER},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */
+	     "Computes a 128-bit MurmurHash3 (x64 variant) non-cryptographic hash of the input with a seed",
+	     /* examples */ {"murmurhash3_x64_128('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(murmurhash3_x64_128_info);
 
-	QueryFarmSendTelemetry(loader, "hashfuncs", "2025092301");
+	QueryFarmSendTelemetry(loader, "hashfuncs", "2025120401");
 }
 
 void HashfuncsExtension::Load(ExtensionLoader &loader) {
@@ -648,7 +749,7 @@ std::string HashfuncsExtension::Name() {
 }
 
 std::string HashfuncsExtension::Version() const {
-	return "2025092501";
+	return "2025120401";
 }
 
 } // namespace duckdb
