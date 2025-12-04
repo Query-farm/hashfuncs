@@ -103,38 +103,39 @@ inline void hash_fixed_type_generic_with_seed(const UnifiedVectorFormat &input_v
 			continue;
 		}
 
+		const auto input_idx = input_vdata.sel->get_index(i);
 		const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
 
 		if constexpr (Algorithm == HashAlgorithm::XXH32) {
 			// 32-bit hash using XXH32
-			results[i] = XXH32(&inputs[i], sizeof(TargetType), seed_value);
+			results[i] = XXH32(&inputs[input_idx], sizeof(TargetType), seed_value);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH64) {
 			// 64-bit hash using XXH64
-			results[i] = XXH64(&inputs[i], sizeof(TargetType), seed_value);
+			results[i] = XXH64(&inputs[input_idx], sizeof(TargetType), seed_value);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH3_64) {
 			// 64-bit hash using XXH3
-			results[i] = XXH3_64bits_withSeed(&inputs[i], sizeof(TargetType), seed_value);
+			results[i] = XXH3_64bits_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
 		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
 			// 64-bit hash using RapidHash
-			results[i] = rapidhash_withSeed(&inputs[i], sizeof(TargetType), seed_value);
+			results[i] = rapidhash_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
 			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
 			// 	// 64-bit hash using RapidHash Micro
-			// 	results[i] = rapidhashMicro_withSeed(&inputs[i], sizeof(TargetType), seed_value);
+			// 	results[i] = rapidhashMicro_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
 			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
 			// 	// 64-bit hash using RapidHash Nano
-			// 	results[i] = rapidhashNano_withSeed(&inputs[i], sizeof(TargetType), seed_value);
+			// 	results[i] = rapidhashNano_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
 			// 32-bit hash using MurmurHash3
-			MurmurHash3_x86_32(&inputs[i], sizeof(TargetType), seed_value, &results[i]);
+			MurmurHash3_x86_32(&inputs[input_idx], sizeof(TargetType), seed_value, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_128) {
 			// 128-bit hash using MurmurHash3
-			MurmurHash3_x86_128(&inputs[i], sizeof(TargetType), seed_value, &results[i]);
+			MurmurHash3_x86_128(&inputs[input_idx], sizeof(TargetType), seed_value, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_X64_128) {
 			// 128-bit hash using MurmurHash3 x64
-			MurmurHash3_x64_128(&inputs[i], sizeof(TargetType), seed_value, &results[i]);
+			MurmurHash3_x64_128(&inputs[input_idx], sizeof(TargetType), seed_value, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH3_128) {
 			// 128-bit hash
-			XXH128_hash_t hash128 = XXH3_128bits_withSeed(&inputs[i], sizeof(TargetType), seed_value);
+			XXH128_hash_t hash128 = XXH3_128bits_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
 			results[i] = uhugeint_t {hash128.low64, hash128.high64};
 		}
 	}
@@ -152,36 +153,37 @@ inline void hash_fixed_type_generic(const UnifiedVectorFormat &vdata, const idx_
 			continue;
 		}
 
+		const auto input_idx = vdata.sel->get_index(i);
 		if constexpr (Algorithm == HashAlgorithm::XXH32) {
 			// 32-bit hash using XXH32
-			results[i] = XXH32(&inputs[i], sizeof(TargetType), 0);
+			results[i] = XXH32(&inputs[input_idx], sizeof(TargetType), 0);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH64) {
 			// 64-bit hash using XXH64
-			results[i] = XXH64(&inputs[i], sizeof(TargetType), 0);
+			results[i] = XXH64(&inputs[input_idx], sizeof(TargetType), 0);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH3_64) {
 			// 64-bit hash using XXH3
-			results[i] = XXH3_64bits(&inputs[i], sizeof(TargetType));
+			results[i] = XXH3_64bits(&inputs[input_idx], sizeof(TargetType));
 		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
 			// 64-bit hash using RapidHash
-			results[i] = rapidhash(&inputs[i], sizeof(TargetType));
+			results[i] = rapidhash(&inputs[input_idx], sizeof(TargetType));
 			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
 			// 	// 64-bit hash using RapidHash Micro
-			// 	results[i] = rapidhashMicro(&inputs[i], sizeof(TargetType));
+			// 	results[i] = rapidhashMicro(&inputs[input_idx], sizeof(TargetType));
 			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
 			// 	// 64-bit hash using RapidHash Nano
-			// 	results[i] = rapidhashNano(&inputs[i], sizeof(TargetType));
+			// 	results[i] = rapidhashNano(&inputs[input_idx], sizeof(TargetType));
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
 			// 32-bit hash using MurmurHash3
-			MurmurHash3_x86_32(&inputs[i], sizeof(TargetType), 0, &results[i]);
+			MurmurHash3_x86_32(&inputs[input_idx], sizeof(TargetType), 0, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_128) {
 			// 128-bit hash using MurmurHash3
-			MurmurHash3_x86_128(&inputs[i], sizeof(TargetType), 0, &results[i]);
+			MurmurHash3_x86_128(&inputs[input_idx], sizeof(TargetType), 0, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_X64_128) {
 			// 128-bit hash using MurmurHash3 x64
-			MurmurHash3_x64_128(&inputs[i], sizeof(TargetType), 0, &results[i]);
+			MurmurHash3_x64_128(&inputs[input_idx], sizeof(TargetType), 0, &results[i]);
 		} else if constexpr (Algorithm == HashAlgorithm::XXH3_128) {
 			// 128-bit hash
-			XXH128_hash_t hash128 = XXH3_128bits(&inputs[i], sizeof(TargetType));
+			XXH128_hash_t hash128 = XXH3_128bits(&inputs[input_idx], sizeof(TargetType));
 			results[i] = uhugeint_t {hash128.low64, hash128.high64};
 		}
 	}
@@ -217,7 +219,7 @@ inline void hashfunc_generic(DataChunk &args, ExpressionState &state, Vector &re
 				result_validity.SetInvalid(i);
 				continue;
 			}
-			const auto &str = inputs[i];
+			const auto &str = inputs[vdata.sel->get_index(i)];
 
 			if constexpr (Algorithm == HashAlgorithm::XXH32) {
 				// 32-bit hash using XXH32
@@ -365,7 +367,7 @@ inline void hashfunc_generic_with_seed(DataChunk &args, ExpressionState &state, 
 				result_validity.SetInvalid(i);
 				continue;
 			}
-			const auto &str = inputs[i];
+			const auto &str = inputs[input_vdata.sel->get_index(i)];
 
 			const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
 
@@ -738,7 +740,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	     /* categories */ {"hash"}});
 	loader.RegisterFunction(murmurhash3_x64_128_info);
 
-	QueryFarmSendTelemetry(loader, "hashfuncs", "2025120401");
+	QueryFarmSendTelemetry(loader, "hashfuncs", "2025120402");
 }
 
 void HashfuncsExtension::Load(ExtensionLoader &loader) {
@@ -749,7 +751,7 @@ std::string HashfuncsExtension::Name() {
 }
 
 std::string HashfuncsExtension::Version() const {
-	return "2025120401";
+	return "2025120402";
 }
 
 } // namespace duckdb
