@@ -1,5 +1,5 @@
 name: Main Extension Distribution Pipeline
-true:
+on:
   push: null
   pull_request: null
   workflow_dispatch: null
