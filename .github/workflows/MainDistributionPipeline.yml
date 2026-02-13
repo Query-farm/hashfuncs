@@ -1,5 +1,7 @@
 name: Main Extension Distribution Pipeline
 on:
+  schedule:
+    - cron: '47 3 * * *'
   push:
     branches:
     - main
