@@ -3,6 +3,8 @@ on:
   push: null
   pull_request: null
   workflow_dispatch: null
+  schedule:
+    - cron: '0 6 * * *'
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{
     github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha ||
