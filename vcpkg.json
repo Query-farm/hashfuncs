@@ -6,6 +6,7 @@
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [
+                        "./vcpkg-overlay/rapidhash",
                         "./extension-ci-tools/vcpkg_ports"
                 ]
         }
