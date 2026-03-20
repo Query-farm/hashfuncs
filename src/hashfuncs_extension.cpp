@@ -521,6 +521,96 @@ inline void hashfunc_XXH3_128_with_seed(DataChunk &args, ExpressionState &state,
 	hashfunc_generic_with_seed<uhugeint_t, HashAlgorithm::XXH3_128>(args, state, result);
 }
 
+// 128-bit hash as canonical hex VARCHAR (low64 || high64, matching Python xxhash.hexdigest())
+//
+// The xxHash canonical format encodes the 128-bit hash as low64 followed by high64 in hex.
+// This matches: Python xxhash.xxh3_128(b'...').hexdigest(),
+//               C XXH128_canonicalFromHash → hex,
+//               Rust xxhash_rust displayed as hex.
+//
+// The existing xxh3_128() returns UHUGEINT where DuckDB's printf('%032x', ...) renders
+// high64 first (MSB), requiring a half-swap workaround. This function avoids that.
+inline void hashfunc_XXH3_128_hex(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &input_vector = args.data[0];
+	const auto row_count = args.size();
+
+	if (row_count == 0) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		return;
+	}
+
+	UnifiedVectorFormat vdata;
+	input_vector.ToUnifiedFormat(row_count, vdata);
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_validity = FlatVector::Validity(result);
+
+	const auto type_id = input_vector.GetType().id();
+
+	switch (type_id) {
+	case LogicalTypeId::BLOB:
+	case LogicalTypeId::VARCHAR: {
+		auto inputs = FlatVector::GetData<string_t>(input_vector);
+		for (idx_t i = 0; i < row_count; i++) {
+			if (!vdata.validity.RowIsValid(i)) {
+				result_validity.SetInvalid(i);
+				continue;
+			}
+			const auto &str = inputs[vdata.sel->get_index(i)];
+			XXH128_hash_t hash128 = XXH3_128bits(str.GetData(), str.GetSize());
+			// Canonical format: low64 hex || high64 hex (matches Python xxhash.hexdigest())
+			char hex_buf[33];
+			snprintf(hex_buf, sizeof(hex_buf), "%016llx%016llx",
+			         static_cast<unsigned long long>(hash128.low64),
+			         static_cast<unsigned long long>(hash128.high64));
+			FlatVector::GetData<string_t>(result)[i] = StringVector::AddString(result, hex_buf, 32);
+		}
+		break;
+	}
+	default: {
+		// For non-string types, hash the raw bytes
+		throw InvalidInputException("xxh3_128_hex only supports VARCHAR and BLOB inputs");
+	}
+	}
+}
+
+// 128-bit hash as canonical hex VARCHAR with seed
+inline void hashfunc_XXH3_128_hex_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &input_vector = args.data[0];
+	auto &seed_vector = args.data[1];
+	const auto row_count = args.size();
+
+	if (row_count == 0) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		return;
+	}
+
+	UnifiedVectorFormat input_vdata, seed_vdata;
+	input_vector.ToUnifiedFormat(row_count, input_vdata);
+	seed_vector.ToUnifiedFormat(row_count, seed_vdata);
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_validity = FlatVector::Validity(result);
+
+	auto inputs = FlatVector::GetData<string_t>(input_vector);
+	auto seeds = FlatVector::GetData<uint64_t>(seed_vector);
+
+	for (idx_t i = 0; i < row_count; i++) {
+		if (!input_vdata.validity.RowIsValid(i) || !seed_vdata.validity.RowIsValid(i)) {
+			result_validity.SetInvalid(i);
+			continue;
+		}
+		const auto &str = inputs[input_vdata.sel->get_index(i)];
+		const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
+		XXH128_hash_t hash128 = XXH3_128bits_withSeed(str.GetData(), str.GetSize(), seed_value);
+		char hex_buf[33];
+		snprintf(hex_buf, sizeof(hex_buf), "%016llx%016llx",
+		         static_cast<unsigned long long>(hash128.low64),
+		         static_cast<unsigned long long>(hash128.high64));
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddString(result, hex_buf, 32);
+	}
+}
+
 inline void hashfunc_rapidhash(DataChunk &args, ExpressionState &state, Vector &result) {
 	hashfunc_generic<uint64_t, HashAlgorithm::RAPIDHASH>(args, state, result);
 }
@@ -653,6 +743,31 @@ static void LoadInternal(ExtensionLoader &loader) {
 	     /* examples */ {"xxh3_128('hello', 42)"},
 	     /* categories */ {"hash"}});
 	loader.RegisterFunction(xxh3_128_info);
+
+	// XXH3_128_hex - 128-bit xxHash3 as canonical hex string
+	ScalarFunctionSet xxh3_128_hex_set("xxh3_128_hex");
+	xxh3_128_hex_set.AddFunction(ScalarFunction({LogicalType::VARCHAR}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex));
+	xxh3_128_hex_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex));
+	xxh3_128_hex_set.AddFunction(
+	    ScalarFunction({LogicalType::VARCHAR, LogicalType::UBIGINT}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex_with_seed));
+	xxh3_128_hex_set.AddFunction(
+	    ScalarFunction({LogicalType::BLOB, LogicalType::UBIGINT}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex_with_seed));
+	CreateScalarFunctionInfo xxh3_128_hex_info(xxh3_128_hex_set);
+	xxh3_128_hex_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::VARCHAR},
+	     /* parameter_names */ {"value"},
+	     /* description */ "Computes a 128-bit xxHash3 hash and returns it as a 32-character lowercase hex string "
+	                       "in canonical byte order (low64 || high64), matching Python xxhash.xxh3_128().hexdigest()",
+	     /* examples */ {"xxh3_128_hex('hello')"},
+	     /* categories */ {"hash"}});
+	xxh3_128_hex_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::VARCHAR, LogicalType::UBIGINT},
+	     /* parameter_names */ {"value", "seed"},
+	     /* description */ "Computes a 128-bit xxHash3 hash with a seed and returns it as a 32-character lowercase "
+	                       "hex string in canonical byte order",
+	     /* examples */ {"xxh3_128_hex('hello', 42)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(xxh3_128_hex_info);
 
 	// RapidHash - fast 64-bit hash
 	ScalarFunctionSet rapidhash_set("rapidhash");
