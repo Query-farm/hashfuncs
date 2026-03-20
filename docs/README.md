@@ -131,6 +131,30 @@ SELECT xxh3_128('hello world', 777);
 └─────────────────────────────────────────┘
 ```
 
+#### `xxh3_128_hex(data [, seed])`
+- **Returns**: `VARCHAR` (32-character lowercase hex string)
+- **Seed type**: `UBIGINT` (optional)
+- **Input types**: `VARCHAR`, `BLOB`
+- **Description**: Computes a 128-bit xxHash3 and returns it as a 32-character lowercase hex string in canonical xxHash byte order (`low64 || high64`). This matches the output of Python's `xxhash.xxh3_128().hexdigest()`, C's `XXH128_canonicalFromHash` converted to hex, and Rust's `xxhash_rust` displayed as hex.
+
+```sql
+SELECT xxh3_128_hex('hello');
+┌──────────────────────────────────┐
+│       xxh3_128_hex('hello')      │
+│             varchar              │
+├──────────────────────────────────┤
+│ 7a83e2c999242f00c44b2b6fbdd3e5eb │
+└──────────────────────────────────┘
+
+SELECT xxh3_128_hex('hello', 42);
+┌──────────────────────────────────┐
+│    xxh3_128_hex('hello', 42)     │
+│             varchar              │
+├──────────────────────────────────┤
+│ 2db25d7a04e01a62b3a0685de26bb442 │
+└──────────────────────────────────┘
+```
+
 ### RapidHash Family
 
 **RapidHash** is designed for exceptional speed while maintaining good hash quality.
@@ -236,6 +260,7 @@ All hash functions support the following DuckDB data types:
 | `xxh64` | Very Fast | Very Good | 64-bit | General purpose hashing |
 | `xxh3_64` | Fastest | Excellent | 64-bit | Modern applications |
 | `xxh3_128` | Fast | Excellent | 128-bit | When collision resistance is critical |
+| `xxh3_128_hex` | Fast | Excellent | 128-bit (hex) | Cross-language compatibility (matches Python xxhash hexdigest) |
 | `rapidhash` | Extremely Fast | Good | 64-bit | High-throughput applications |
 | `rapidhash_micro` | Extremely Fast | Good | 64-bit | Small data, high frequency |
 | `rapidhash_nano` | Fastest | Fair | 64-bit | Tiny data, maximum speed |
