@@ -4,7 +4,7 @@ on:
     - cron: '47 3 * * *'
   push:
     branches:
-    - main
+    - v1.5
   pull_request: null
   workflow_dispatch: null
 concurrency:
