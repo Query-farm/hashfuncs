@@ -4,6 +4,11 @@
 duckdb_extension_load(hashfuncs
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
     LOAD_TESTS
+    # Wasm: the loadable-extension emcc link only includes libraries listed
+    # here (target_link_libraries is ignored for the SIDE_MODULE link), so the
+    # hash libraries must be named explicitly or their symbols are left
+    # undefined (loads but throws "n is not a function" on first call).
+    LINKED_LIBS "../../vcpkg_installed/wasm32-emscripten/lib/libxxhash.a ../../vcpkg_installed/wasm32-emscripten/lib/libmurmurhash.a"
 )
 
 # Any extra extensions that should be built

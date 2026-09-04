@@ -855,7 +855,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	     /* categories */ {"hash"}});
 	loader.RegisterFunction(murmurhash3_x64_128_info);
 
-	QueryFarmSendTelemetry(loader, "hashfuncs", "2025120402");
+	QueryFarmSendTelemetry(loader, "hashfuncs", "2026072501");
 }
 
 void HashfuncsExtension::Load(ExtensionLoader &loader) {
@@ -866,7 +866,7 @@ std::string HashfuncsExtension::Name() {
 }
 
 std::string HashfuncsExtension::Version() const {
-	return "2025120402";
+	return "2026072501";
 }
 
 } // namespace duckdb
