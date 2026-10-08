@@ -31,4 +31,6 @@ load hashfuncs;
 
 The VARCHAR/BLOB xxh3_128_hex overloads now emit canonical high64-then-low64 hex, with or without a seed. For hello, the corrected digest is b5e9c1ad071b3e7fc779cfaa5e523818. Older affected builds (including 0dec806) emitted c779cfaa5e523818b5e9c1ad071b3e7f. Swap the two 16-character halves of previously stored affected hex digests once when migrating.
 
-Numeric xxh3_128 outputs are deliberately unchanged to preserve stored keys. Their historical UHUGEINT half ordering is not canonical: swap the halves of their zero-padded 32-character hex for interchange. Community packages may lag this source fix; verify the hello digest before removing any old workaround.
+Numeric xxh3_128 outputs for non-NULL inputs are deliberately unchanged to preserve stored keys. Their historical UHUGEINT half ordering is not canonical: swap the halves of their zero-padded 32-character hex for interchange. Community packages may lag this source fix; verify the hello digest before removing any old workaround.
+
+A follow-up fixes NULL propagation and selected-vector reads across all numeric hash algorithms. NULL inputs or seeds now yield SQL NULL in vectorized queries; valid input hashes and byte layouts remain unchanged.

@@ -92,13 +92,14 @@ inline void hash_fixed_type_generic_with_seed(const UnifiedVectorFormat &input_v
                                               const Vector &input_vector, const UnifiedVectorFormat &seed_vdata,
                                               const Vector &seed_vector, ValidityMask &result_validity,
                                               ResultType *results) {
-	auto inputs = FlatVector::GetData<TargetType>(input_vector);
+	auto inputs = UnifiedVectorFormat::GetData<TargetType>(input_vdata);
 
 	using SeedType = hash_seed_type_t<Algorithm>;
-	auto seeds = FlatVector::GetData<SeedType>(seed_vector);
+	auto seeds = UnifiedVectorFormat::GetData<SeedType>(seed_vdata);
 
 	for (idx_t i = 0; i < row_count; i++) {
-		if (!input_vdata.validity.RowIsValid(i) || !seed_vdata.validity.RowIsValid(i)) {
+		if (!input_vdata.validity.RowIsValid(input_vdata.sel->get_index(i)) ||
+		    !seed_vdata.validity.RowIsValid(seed_vdata.sel->get_index(i))) {
 			result_validity.SetInvalid(i);
 			continue;
 		}
@@ -145,10 +146,10 @@ inline void hash_fixed_type_generic_with_seed(const UnifiedVectorFormat &input_v
 template <typename TargetType, typename ResultType, HashAlgorithm Algorithm>
 inline void hash_fixed_type_generic(const UnifiedVectorFormat &vdata, const idx_t row_count, const Vector &vector,
                                     ValidityMask &result_validity, ResultType *results) {
-	auto inputs = FlatVector::GetData<TargetType>(vector);
+	auto inputs = UnifiedVectorFormat::GetData<TargetType>(vdata);
 
 	for (idx_t i = 0; i < row_count; i++) {
-		if (!vdata.validity.RowIsValid(i)) {
+		if (!vdata.validity.RowIsValid(vdata.sel->get_index(i))) {
 			result_validity.SetInvalid(i);
 			continue;
 		}
@@ -205,7 +206,7 @@ inline void hashfunc_generic(DataChunk &args, ExpressionState &state, Vector &re
 	input_vector.ToUnifiedFormat(row_count, vdata);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_validity = FlatVector::Validity(result);
+	auto &result_validity = FlatVector::Validity(result);
 	auto results = FlatVector::GetData<ResultType>(result);
 
 	const auto type_id = input_vector.GetType().id();
@@ -213,9 +214,9 @@ inline void hashfunc_generic(DataChunk &args, ExpressionState &state, Vector &re
 	switch (type_id) {
 	case LogicalTypeId::BLOB:
 	case LogicalTypeId::VARCHAR: {
-		auto inputs = FlatVector::GetData<string_t>(input_vector);
+		auto inputs = UnifiedVectorFormat::GetData<string_t>(vdata);
 		for (idx_t i = 0; i < row_count; i++) {
-			if (!vdata.validity.RowIsValid(i)) {
+			if (!vdata.validity.RowIsValid(vdata.sel->get_index(i))) {
 				result_validity.SetInvalid(i);
 				continue;
 			}
@@ -351,7 +352,7 @@ inline void hashfunc_generic_with_seed(DataChunk &args, ExpressionState &state, 
 	seed_vector.ToUnifiedFormat(row_count, seed_vdata);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_validity = FlatVector::Validity(result);
+	auto &result_validity = FlatVector::Validity(result);
 	auto results = FlatVector::GetData<ResultType>(result);
 
 	const auto type_id = input_vector.GetType().id();
@@ -359,11 +360,12 @@ inline void hashfunc_generic_with_seed(DataChunk &args, ExpressionState &state, 
 	switch (type_id) {
 	case LogicalTypeId::BLOB:
 	case LogicalTypeId::VARCHAR: {
-		auto inputs = FlatVector::GetData<string_t>(input_vector);
+		auto inputs = UnifiedVectorFormat::GetData<string_t>(input_vdata);
 
-		auto seeds = FlatVector::GetData<hash_seed_type_t<Algorithm>>(seed_vector);
+		auto seeds = UnifiedVectorFormat::GetData<hash_seed_type_t<Algorithm>>(seed_vdata);
 		for (idx_t i = 0; i < row_count; i++) {
-			if (!input_vdata.validity.RowIsValid(i) || !seed_vdata.validity.RowIsValid(i)) {
+			if (!input_vdata.validity.RowIsValid(input_vdata.sel->get_index(i)) ||
+			    !seed_vdata.validity.RowIsValid(seed_vdata.sel->get_index(i))) {
 				result_validity.SetInvalid(i);
 				continue;
 			}
@@ -867,7 +869,7 @@ std::string HashfuncsExtension::Name() {
 }
 
 std::string HashfuncsExtension::Version() const {
-	return "2026100701";
+	return "2026100702";
 }
 
 } // namespace duckdb
