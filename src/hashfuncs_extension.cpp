@@ -5,6 +5,9 @@
 #include "duckdb/function/scalar_function.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/common/types/string_type.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/string_vector.hpp"
+#include "duckdb/common/vector/unified_vector_format.hpp"
 #include "xxhash.h"
 #include "rapidhash.h"
 #include "MurmurHash3.h"
@@ -203,11 +206,11 @@ inline void hashfunc_generic(DataChunk &args, ExpressionState &state, Vector &re
 	}
 
 	UnifiedVectorFormat vdata;
-	input_vector.ToUnifiedFormat(row_count, vdata);
+	input_vector.ToUnifiedFormat(vdata);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &result_validity = FlatVector::Validity(result);
-	auto results = FlatVector::GetData<ResultType>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
+	auto results = FlatVector::GetDataMutable<ResultType>(result);
 
 	const auto type_id = input_vector.GetType().id();
 
@@ -346,14 +349,14 @@ inline void hashfunc_generic_with_seed(DataChunk &args, ExpressionState &state, 
 	}
 
 	UnifiedVectorFormat input_vdata;
-	input_vector.ToUnifiedFormat(row_count, input_vdata);
+	input_vector.ToUnifiedFormat(input_vdata);
 
 	UnifiedVectorFormat seed_vdata;
-	seed_vector.ToUnifiedFormat(row_count, seed_vdata);
+	seed_vector.ToUnifiedFormat(seed_vdata);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &result_validity = FlatVector::Validity(result);
-	auto results = FlatVector::GetData<ResultType>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
+	auto results = FlatVector::GetDataMutable<ResultType>(result);
 
 	const auto type_id = input_vector.GetType().id();
 
@@ -548,10 +551,10 @@ inline void hashfunc_XXH3_128_hex(DataChunk &args, ExpressionState &state, Vecto
 	}
 
 	UnifiedVectorFormat vdata;
-	input_vector.ToUnifiedFormat(row_count, vdata);
+	input_vector.ToUnifiedFormat(vdata);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &result_validity = FlatVector::Validity(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	const auto type_id = input_vector.GetType().id();
 
@@ -566,7 +569,7 @@ inline void hashfunc_XXH3_128_hex(DataChunk &args, ExpressionState &state, Vecto
 			}
 			const auto &str = inputs[vdata.sel->get_index(i)];
 			XXH128_hash_t hash128 = XXH3_128bits(str.GetData(), str.GetSize());
-			FlatVector::GetData<string_t>(result)[i] = CanonicalXXH128Hex(result, hash128);
+			FlatVector::GetDataMutable<string_t>(result)[i] = CanonicalXXH128Hex(result, hash128);
 		}
 		break;
 	}
@@ -589,11 +592,11 @@ inline void hashfunc_XXH3_128_hex_with_seed(DataChunk &args, ExpressionState &st
 	}
 
 	UnifiedVectorFormat input_vdata, seed_vdata;
-	input_vector.ToUnifiedFormat(row_count, input_vdata);
-	seed_vector.ToUnifiedFormat(row_count, seed_vdata);
+	input_vector.ToUnifiedFormat(input_vdata);
+	seed_vector.ToUnifiedFormat(seed_vdata);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &result_validity = FlatVector::Validity(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	auto inputs = UnifiedVectorFormat::GetData<string_t>(input_vdata);
 	auto seeds = UnifiedVectorFormat::GetData<uint64_t>(seed_vdata);
@@ -607,7 +610,7 @@ inline void hashfunc_XXH3_128_hex_with_seed(DataChunk &args, ExpressionState &st
 		const auto &str = inputs[input_vdata.sel->get_index(i)];
 		const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
 		XXH128_hash_t hash128 = XXH3_128bits_withSeed(str.GetData(), str.GetSize(), seed_value);
-		FlatVector::GetData<string_t>(result)[i] = CanonicalXXH128Hex(result, hash128);
+		FlatVector::GetDataMutable<string_t>(result)[i] = CanonicalXXH128Hex(result, hash128);
 	}
 }
 
@@ -668,6 +671,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	xxh32_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_XXH32));
 	xxh32_set.AddFunction(
 	    ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UINTEGER, hashfunc_XXH32_with_seed));
+	xxh32_set.SetFallible();
 	CreateScalarFunctionInfo xxh32_info(xxh32_set);
 	xxh32_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::ANY},
@@ -688,6 +692,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	xxh64_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH64));
 	xxh64_set.AddFunction(
 	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_XXH64_with_seed));
+	xxh64_set.SetFallible();
 	CreateScalarFunctionInfo xxh64_info(xxh64_set);
 	xxh64_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::ANY},
@@ -708,6 +713,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	xxh3_64_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH3_64));
 	xxh3_64_set.AddFunction(
 	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_XXH3_64_with_seed));
+	xxh3_64_set.SetFallible();
 	CreateScalarFunctionInfo xxh3_64_info(xxh3_64_set);
 	xxh3_64_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::ANY},
@@ -729,6 +735,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	xxh3_128_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_XXH3_128));
 	xxh3_128_set.AddFunction(
 	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UHUGEINT, hashfunc_XXH3_128_with_seed));
+	xxh3_128_set.SetFallible();
 	CreateScalarFunctionInfo xxh3_128_info(xxh3_128_set);
 	xxh3_128_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::ANY},
@@ -752,6 +759,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                            hashfunc_XXH3_128_hex_with_seed));
 	xxh3_128_hex_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::UBIGINT}, LogicalType::VARCHAR,
 	                                            hashfunc_XXH3_128_hex_with_seed));
+	xxh3_128_hex_set.SetFallible();
 	CreateScalarFunctionInfo xxh3_128_hex_info(xxh3_128_hex_set);
 	xxh3_128_hex_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::VARCHAR},
@@ -776,6 +784,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	rapidhash_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhash));
 	rapidhash_set.AddFunction(
 	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_rapidhash_with_seed));
+	rapidhash_set.SetFallible();
 	CreateScalarFunctionInfo rapidhash_info(rapidhash_set);
 	rapidhash_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::ANY},
@@ -797,6 +806,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	murmurhash3_32_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_MurmurHash3_32));
 	murmurhash3_32_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UINTEGER,
 	                                              hashfunc_MurmurHash3_32_with_seed));
+	murmurhash3_32_set.SetFallible();
 	CreateScalarFunctionInfo murmurhash3_32_info(murmurhash3_32_set);
 	murmurhash3_32_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::ANY},
@@ -818,6 +828,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_128));
 	murmurhash3_128_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UHUGEINT,
 	                                               hashfunc_MurmurHash3_128_with_seed));
+	murmurhash3_128_set.SetFallible();
 	CreateScalarFunctionInfo murmurhash3_128_info(murmurhash3_128_set);
 	murmurhash3_128_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::ANY},
@@ -840,6 +851,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128));
 	murmurhash3_x64_128_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UHUGEINT,
 	                                                   hashfunc_MurmurHash3_X64_128_with_seed));
+	murmurhash3_x64_128_set.SetFallible();
 	CreateScalarFunctionInfo murmurhash3_x64_128_info(murmurhash3_x64_128_set);
 	murmurhash3_x64_128_info.descriptions.push_back(
 	    {/* parameter_types */ {LogicalType::ANY},
