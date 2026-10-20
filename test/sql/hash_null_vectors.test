@@ -1,0 +1,195 @@
+# name: test/sql/hash_null_vectors.test
+# description: shared numeric hash NULL and selection-vector handling
+# group: [sql]
+
+require hashfuncs
+
+statement ok
+CREATE TABLE nullable_hash_inputs AS SELECT i, CASE WHEN i%3=1 THEN NULL ELSE i::VARCHAR END AS s,
+CASE WHEN i%3=1 THEN NULL ELSE i END AS n,
+CASE WHEN i%5=2 THEN NULL ELSE i::UINTEGER END AS seed
+FROM range(5000) t(i);
+
+# xxh32: full vectors, selected VARCHAR/BLOB/fixed-width inputs and seed NULLs.
+query IIIIII
+SELECT bool_and((xxh32(s) IS NULL) = (s IS NULL)),
+       bool_and((xxh32(n) IS NULL) = (n IS NULL)),
+       bool_and((xxh32(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((xxh32(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((xxh32(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((xxh32(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT bool_and((xxh32(s) IS NULL) = (s IS NULL)),
+       bool_and((xxh32(n) IS NULL) = (n IS NULL)),
+       bool_and((xxh32(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((xxh32(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((xxh32(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((xxh32(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs WHERE i%7 IN (1,2,3);
+----
+true	true	true	true	true	true
+
+# xxh64: full vectors, selected VARCHAR/BLOB/fixed-width inputs and seed NULLs.
+query IIIIII
+SELECT bool_and((xxh64(s) IS NULL) = (s IS NULL)),
+       bool_and((xxh64(n) IS NULL) = (n IS NULL)),
+       bool_and((xxh64(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((xxh64(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((xxh64(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((xxh64(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT bool_and((xxh64(s) IS NULL) = (s IS NULL)),
+       bool_and((xxh64(n) IS NULL) = (n IS NULL)),
+       bool_and((xxh64(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((xxh64(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((xxh64(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((xxh64(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs WHERE i%7 IN (1,2,3);
+----
+true	true	true	true	true	true
+
+# xxh3_64: full vectors, selected VARCHAR/BLOB/fixed-width inputs and seed NULLs.
+query IIIIII
+SELECT bool_and((xxh3_64(s) IS NULL) = (s IS NULL)),
+       bool_and((xxh3_64(n) IS NULL) = (n IS NULL)),
+       bool_and((xxh3_64(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((xxh3_64(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((xxh3_64(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((xxh3_64(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT bool_and((xxh3_64(s) IS NULL) = (s IS NULL)),
+       bool_and((xxh3_64(n) IS NULL) = (n IS NULL)),
+       bool_and((xxh3_64(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((xxh3_64(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((xxh3_64(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((xxh3_64(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs WHERE i%7 IN (1,2,3);
+----
+true	true	true	true	true	true
+
+# xxh3_128: full vectors, selected VARCHAR/BLOB/fixed-width inputs and seed NULLs.
+query IIIIII
+SELECT bool_and((xxh3_128(s) IS NULL) = (s IS NULL)),
+       bool_and((xxh3_128(n) IS NULL) = (n IS NULL)),
+       bool_and((xxh3_128(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((xxh3_128(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((xxh3_128(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((xxh3_128(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT bool_and((xxh3_128(s) IS NULL) = (s IS NULL)),
+       bool_and((xxh3_128(n) IS NULL) = (n IS NULL)),
+       bool_and((xxh3_128(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((xxh3_128(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((xxh3_128(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((xxh3_128(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs WHERE i%7 IN (1,2,3);
+----
+true	true	true	true	true	true
+
+# rapidhash: full vectors, selected VARCHAR/BLOB/fixed-width inputs and seed NULLs.
+query IIIIII
+SELECT bool_and((rapidhash(s) IS NULL) = (s IS NULL)),
+       bool_and((rapidhash(n) IS NULL) = (n IS NULL)),
+       bool_and((rapidhash(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((rapidhash(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((rapidhash(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((rapidhash(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT bool_and((rapidhash(s) IS NULL) = (s IS NULL)),
+       bool_and((rapidhash(n) IS NULL) = (n IS NULL)),
+       bool_and((rapidhash(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((rapidhash(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((rapidhash(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((rapidhash(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs WHERE i%7 IN (1,2,3);
+----
+true	true	true	true	true	true
+
+# murmurhash3_32: full vectors, selected VARCHAR/BLOB/fixed-width inputs and seed NULLs.
+query IIIIII
+SELECT bool_and((murmurhash3_32(s) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_32(n) IS NULL) = (n IS NULL)),
+       bool_and((murmurhash3_32(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_32(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_32(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_32(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT bool_and((murmurhash3_32(s) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_32(n) IS NULL) = (n IS NULL)),
+       bool_and((murmurhash3_32(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_32(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_32(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_32(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs WHERE i%7 IN (1,2,3);
+----
+true	true	true	true	true	true
+
+# murmurhash3_128: full vectors, selected VARCHAR/BLOB/fixed-width inputs and seed NULLs.
+query IIIIII
+SELECT bool_and((murmurhash3_128(s) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_128(n) IS NULL) = (n IS NULL)),
+       bool_and((murmurhash3_128(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_128(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_128(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_128(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT bool_and((murmurhash3_128(s) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_128(n) IS NULL) = (n IS NULL)),
+       bool_and((murmurhash3_128(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_128(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_128(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_128(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs WHERE i%7 IN (1,2,3);
+----
+true	true	true	true	true	true
+
+# murmurhash3_x64_128: full vectors, selected VARCHAR/BLOB/fixed-width inputs and seed NULLs.
+query IIIIII
+SELECT bool_and((murmurhash3_x64_128(s) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_x64_128(n) IS NULL) = (n IS NULL)),
+       bool_and((murmurhash3_x64_128(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_x64_128(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_x64_128(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_x64_128(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT bool_and((murmurhash3_x64_128(s) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_x64_128(n) IS NULL) = (n IS NULL)),
+       bool_and((murmurhash3_x64_128(encode(s)) IS NULL) = (s IS NULL)),
+       bool_and((murmurhash3_x64_128(s,seed) IS NULL) = (s IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_x64_128(n,seed) IS NULL) = (n IS NULL OR seed IS NULL)),
+       bool_and((murmurhash3_x64_128(encode(s),seed) IS NULL) = (s IS NULL OR seed IS NULL))
+FROM nullable_hash_inputs WHERE i%7 IN (1,2,3);
+----
+true	true	true	true	true	true

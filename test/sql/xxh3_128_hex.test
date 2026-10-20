@@ -1,0 +1,101 @@
+# name: test/sql/xxh3_128_hex.test
+# description: canonical XXH3-128 interchange without changing legacy numeric hashes
+# group: [sql]
+
+require hashfuncs
+
+# Reference vectors from the upstream XXH128_canonicalFromHash API.
+query TT
+SELECT xxh3_128_hex('hello'), xxh3_128_hex('hello',42);
+----
+b5e9c1ad071b3e7fc779cfaa5e523818	6ce89a0bdba81f088c2f5b7e4cd59e16
+
+query TT
+SELECT xxh3_128_hex(''), xxh3_128_hex('',42);
+----
+99aa06d3014798d86001c324468d497f	16c20acd33f7af2f3c1d09e9fe249164
+
+query TT
+SELECT xxh3_128_hex('hello world'), xxh3_128_hex('hello world',777);
+----
+df8d09e93f874900a99b8775cc15b6c7	f85948d830068755d50ccbf9508d2043
+
+query TT
+SELECT xxh3_128_hex('\x00\x01\xFF'::BLOB), xxh3_128_hex('\x00\x01\xFF'::BLOB,42);
+----
+a13aef1444e657458af97d207880c972	d930949b6725e233627bb8bb67ee951c
+
+query II
+SELECT xxh3_128_hex('hello') = xxh3_128_hex('hello'::BLOB),
+       xxh3_128_hex('hello',42) = xxh3_128_hex('hello'::BLOB,42);
+----
+true	true
+
+# Existing numeric keys remain unchanged (including seeded input).
+query II
+SELECT xxh3_128('hello world'), xxh3_128('hello world',777);
+----
+225447084758876380551077147957698971904	283192007746380917896797379546610829141
+
+# Converting the legacy numeric layout needs a 64-bit half swap, not a byte swap.
+query I
+WITH h AS (SELECT lower(printf('%032x',xxh3_128('hello'))) AS legacy)
+SELECT substr(legacy,17,16) || substr(legacy,1,16) = xxh3_128_hex('hello') FROM h;
+----
+true
+
+query TTTT
+SELECT xxh3_128_hex(NULL::VARCHAR), xxh3_128_hex(NULL::BLOB),
+       xxh3_128_hex('hello',NULL::UBIGINT), xxh3_128_hex(NULL::BLOB,42);
+----
+NULL	NULL	NULL	NULL
+
+# Flat input/seed vectors with NULLs and repeated values.
+statement ok
+CREATE TABLE canonical_inputs(id INTEGER, value VARCHAR, seed UBIGINT);
+
+statement ok
+INSERT INTO canonical_inputs VALUES
+  (1,'hello',42),(2,NULL,42),(3,'',0),(4,'hello',NULL),(5,'hello world',777);
+
+query ITT
+SELECT id, xxh3_128_hex(value), xxh3_128_hex(value,seed)
+FROM canonical_inputs ORDER BY id;
+----
+1	b5e9c1ad071b3e7fc779cfaa5e523818	6ce89a0bdba81f088c2f5b7e4cd59e16
+2	NULL	NULL
+3	99aa06d3014798d86001c324468d497f	99aa06d3014798d86001c324468d497f
+4	b5e9c1ad071b3e7fc779cfaa5e523818	NULL
+5	df8d09e93f874900a99b8775cc15b6c7	f85948d830068755d50ccbf9508d2043
+
+# Selection/dictionary vectors must use selected validity and data indices.
+query ITT
+SELECT id, xxh3_128_hex(value), xxh3_128_hex(value,seed)
+FROM canonical_inputs WHERE id IN (2,3,5) ORDER BY id;
+----
+2	NULL	NULL
+3	99aa06d3014798d86001c324468d497f	99aa06d3014798d86001c324468d497f
+5	df8d09e93f874900a99b8775cc15b6c7	f85948d830068755d50ccbf9508d2043
+
+# Repeated constant NULL seed/input over several vectors.
+query I
+SELECT count(xxh3_128_hex('hello',NULL::UBIGINT)) FROM range(5000);
+----
+0
+
+query II
+SELECT bool_and(xxh3_128_hex(value) = xxh3_128_hex(value,0)),
+       bool_and(xxh3_128_hex(value,18446744073709551615) = xxh3_128_hex(encode(value),18446744073709551615))
+FROM (SELECT i::VARCHAR AS value FROM range(5000) t(i));
+----
+true	true
+
+statement error
+SELECT xxh3_128_hex(123);
+----
+No function matches
+
+statement error
+SELECT xxh3_128_hex('hello',-1);
+----
+No function matches
