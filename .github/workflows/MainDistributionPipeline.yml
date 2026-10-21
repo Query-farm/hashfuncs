@@ -35,7 +35,8 @@ jobs:
     with:
       extension_name: hashfuncs
       duckdb_version: v2.0.0
-      dry_run: ${{ inputs.dry_run == true }}
+      # Dry run until the build moves to DuckDB's images (build.yml); the first real publish comes from there.
+      dry_run: true
     secrets:
       signing_key: ${{ secrets.QUERY_FARM_EXTENSION_SIGNING_KEY }}
       r2_access_key_id: ${{ secrets.QUERY_FARM_R2_ACCESS_KEY_ID }}
