@@ -20,5 +20,8 @@ jobs:
         main:
           config: extension_config.cmake
           toolchain: main
+      # The stub test LOADs the binary from {BUILD_DIRECTORY}/extension/, which the
+      # separate test jobs do not restore; the build jobs already run it on each binary.
+      test_jobs: false
     secrets:
       ccache_remote_token: ${{ secrets.QUERY_FARM_CCACHE_TOKEN }}
