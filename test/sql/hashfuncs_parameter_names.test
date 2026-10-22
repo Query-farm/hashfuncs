@@ -1,0 +1,41 @@
+# name: test/sql/hashfuncs_parameter_names.test
+# description: duckdb_functions() reports the declared parameter names instead of col<N>
+# group: [hashfuncs]
+
+require hashfuncs
+
+query II
+SELECT DISTINCT function_name, parameters FROM duckdb_functions()
+WHERE function_name IN ('murmurhash3_128', 'murmurhash3_32', 'murmurhash3_x64_128', 'rapidhash', 'xxh32', 'xxh3_128', 'xxh3_128_hex', 'xxh3_64', 'xxh64')
+ORDER BY ALL;
+----
+murmurhash3_128	[value]
+murmurhash3_128	[value, seed]
+murmurhash3_32	[value]
+murmurhash3_32	[value, seed]
+murmurhash3_x64_128	[value]
+murmurhash3_x64_128	[value, seed]
+rapidhash	[value]
+rapidhash	[value, seed]
+xxh32	[value]
+xxh32	[value, seed]
+xxh3_128	[value]
+xxh3_128	[value, seed]
+xxh3_128_hex	[value]
+xxh3_128_hex	[value, seed]
+xxh3_64	[value]
+xxh3_64	[value, seed]
+xxh64	[value]
+xxh64	[value, seed]
+
+# The parameters are still positional: calls work as before
+
+query II
+SELECT xxh32('hello world'), xxh32('hello world', 42);
+----
+3468387874	4225033588
+
+query I
+SELECT murmurhash3_32('hello world');
+----
+1586663183

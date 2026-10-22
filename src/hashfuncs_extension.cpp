@@ -664,13 +664,20 @@ inline void hashfunc_MurmurHash3_X64_128_with_seed(DataChunk &args, ExpressionSt
 
 } // namespace
 
+// Declares a positional-only parameter with a real name, so duckdb_functions() reports it instead of col<N>.
+static FunctionParameter Positional(const char *name, LogicalType type) {
+	return FunctionParameter(name, std::move(type), {}, FunctionParameterKind::POSITIONAL_ONLY);
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
 
 	// XXH32 - 32-bit xxHash
 	ScalarFunctionSet xxh32_set("xxh32");
-	xxh32_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_XXH32));
 	xxh32_set.AddFunction(
-	    ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UINTEGER, hashfunc_XXH32_with_seed));
+	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UINTEGER, hashfunc_XXH32));
+	xxh32_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UINTEGER)},
+		               LogicalType::UINTEGER, hashfunc_XXH32_with_seed));
 	xxh32_set.SetFallible();
 	CreateScalarFunctionInfo xxh32_info(xxh32_set);
 	xxh32_info.descriptions.push_back(
@@ -689,9 +696,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// XXH64 - 64-bit xxHash
 	ScalarFunctionSet xxh64_set("xxh64");
-	xxh64_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH64));
 	xxh64_set.AddFunction(
-	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_XXH64_with_seed));
+	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UBIGINT, hashfunc_XXH64));
+	xxh64_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UBIGINT)},
+		               LogicalType::UBIGINT, hashfunc_XXH64_with_seed));
 	xxh64_set.SetFallible();
 	CreateScalarFunctionInfo xxh64_info(xxh64_set);
 	xxh64_info.descriptions.push_back(
@@ -710,9 +719,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// XXH3_64 - 64-bit xxHash3 (faster than XXH64 for short inputs)
 	ScalarFunctionSet xxh3_64_set("xxh3_64");
-	xxh3_64_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_XXH3_64));
 	xxh3_64_set.AddFunction(
-	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_XXH3_64_with_seed));
+	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UBIGINT, hashfunc_XXH3_64));
+	xxh3_64_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UBIGINT)},
+		               LogicalType::UBIGINT, hashfunc_XXH3_64_with_seed));
 	xxh3_64_set.SetFallible();
 	CreateScalarFunctionInfo xxh3_64_info(xxh3_64_set);
 	xxh3_64_info.descriptions.push_back(
@@ -732,9 +743,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// XXH3_128 - 128-bit xxHash3
 	ScalarFunctionSet xxh3_128_set("xxh3_128");
-	xxh3_128_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_XXH3_128));
 	xxh3_128_set.AddFunction(
-	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UHUGEINT, hashfunc_XXH3_128_with_seed));
+	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UHUGEINT, hashfunc_XXH3_128));
+	xxh3_128_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UBIGINT)},
+		               LogicalType::UHUGEINT, hashfunc_XXH3_128_with_seed));
 	xxh3_128_set.SetFallible();
 	CreateScalarFunctionInfo xxh3_128_info(xxh3_128_set);
 	xxh3_128_info.descriptions.push_back(
@@ -753,12 +766,16 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// XXH3_128_hex - 128-bit xxHash3 as canonical hex string
 	ScalarFunctionSet xxh3_128_hex_set("xxh3_128_hex");
-	xxh3_128_hex_set.AddFunction(ScalarFunction({LogicalType::VARCHAR}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex));
-	xxh3_128_hex_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex));
-	xxh3_128_hex_set.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::UBIGINT}, LogicalType::VARCHAR,
-	                                            hashfunc_XXH3_128_hex_with_seed));
-	xxh3_128_hex_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::UBIGINT}, LogicalType::VARCHAR,
-	                                            hashfunc_XXH3_128_hex_with_seed));
+	xxh3_128_hex_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::VARCHAR)}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex));
+	xxh3_128_hex_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::BLOB)}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex));
+	xxh3_128_hex_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::VARCHAR), Positional("seed", LogicalType::UBIGINT)},
+		               LogicalType::VARCHAR, hashfunc_XXH3_128_hex_with_seed));
+	xxh3_128_hex_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::BLOB), Positional("seed", LogicalType::UBIGINT)},
+		               LogicalType::VARCHAR, hashfunc_XXH3_128_hex_with_seed));
 	xxh3_128_hex_set.SetFallible();
 	CreateScalarFunctionInfo xxh3_128_hex_info(xxh3_128_hex_set);
 	xxh3_128_hex_info.descriptions.push_back(
@@ -781,9 +798,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// RapidHash - fast 64-bit hash
 	ScalarFunctionSet rapidhash_set("rapidhash");
-	rapidhash_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UBIGINT, hashfunc_rapidhash));
 	rapidhash_set.AddFunction(
-	    ScalarFunction({LogicalType::ANY, LogicalType::UBIGINT}, LogicalType::UBIGINT, hashfunc_rapidhash_with_seed));
+	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UBIGINT, hashfunc_rapidhash));
+	rapidhash_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UBIGINT)},
+		               LogicalType::UBIGINT, hashfunc_rapidhash_with_seed));
 	rapidhash_set.SetFallible();
 	CreateScalarFunctionInfo rapidhash_info(rapidhash_set);
 	rapidhash_info.descriptions.push_back(
@@ -803,9 +822,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// MurmurHash3 32-bit
 	ScalarFunctionSet murmurhash3_32_set("murmurhash3_32");
-	murmurhash3_32_set.AddFunction(ScalarFunction({LogicalType::ANY}, LogicalType::UINTEGER, hashfunc_MurmurHash3_32));
-	murmurhash3_32_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UINTEGER,
-	                                              hashfunc_MurmurHash3_32_with_seed));
+	murmurhash3_32_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UINTEGER, hashfunc_MurmurHash3_32));
+	murmurhash3_32_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UINTEGER)},
+		               LogicalType::UINTEGER, hashfunc_MurmurHash3_32_with_seed));
 	murmurhash3_32_set.SetFallible();
 	CreateScalarFunctionInfo murmurhash3_32_info(murmurhash3_32_set);
 	murmurhash3_32_info.descriptions.push_back(
@@ -825,9 +846,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// MurmurHash3 128-bit (x86 variant)
 	ScalarFunctionSet murmurhash3_128_set("murmurhash3_128");
 	murmurhash3_128_set.AddFunction(
-	    ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_128));
-	murmurhash3_128_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UHUGEINT,
-	                                               hashfunc_MurmurHash3_128_with_seed));
+	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_128));
+	murmurhash3_128_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UINTEGER)},
+		               LogicalType::UHUGEINT, hashfunc_MurmurHash3_128_with_seed));
 	murmurhash3_128_set.SetFallible();
 	CreateScalarFunctionInfo murmurhash3_128_info(murmurhash3_128_set);
 	murmurhash3_128_info.descriptions.push_back(
@@ -848,9 +870,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// MurmurHash3 128-bit (x64 variant - optimized for 64-bit platforms)
 	ScalarFunctionSet murmurhash3_x64_128_set("murmurhash3_x64_128");
 	murmurhash3_x64_128_set.AddFunction(
-	    ScalarFunction({LogicalType::ANY}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128));
-	murmurhash3_x64_128_set.AddFunction(ScalarFunction({LogicalType::ANY, LogicalType::UINTEGER}, LogicalType::UHUGEINT,
-	                                                   hashfunc_MurmurHash3_X64_128_with_seed));
+	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128));
+	murmurhash3_x64_128_set.AddFunction(
+	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UINTEGER)},
+		               LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128_with_seed));
 	murmurhash3_x64_128_set.SetFallible();
 	CreateScalarFunctionInfo murmurhash3_x64_128_info(murmurhash3_x64_128_set);
 	murmurhash3_x64_128_info.descriptions.push_back(
@@ -870,7 +893,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	     /* categories */ {"hash"}});
 	loader.RegisterFunction(murmurhash3_x64_128_info);
 
-	QueryFarmSendTelemetry(loader, "hashfuncs", "2026102001");
+	QueryFarmSendTelemetry(loader, "hashfuncs", "2026102101");
 }
 
 void HashfuncsExtension::Load(ExtensionLoader &loader) {
@@ -881,7 +904,7 @@ std::string HashfuncsExtension::Name() {
 }
 
 std::string HashfuncsExtension::Version() const {
-	return "2026102001";
+	return "2026102101";
 }
 
 } // namespace duckdb
