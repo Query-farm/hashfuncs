@@ -7,10 +7,10 @@
   </a>
 </p>
 
-# Hashfuncs (hash functions) Extension for DuckDB
+# Hashfuncs Extension for DuckDB
 
-[![DuckDB](https://img.shields.io/badge/DuckDB-community_extension-fdf1e0?logo=duckdb&logoColor=fff000)](https://duckdb.org/community_extensions/extensions/hashfuncs.html)
-[![v1.5 build](https://github.com/Query-farm/hashfuncs/actions/workflows/MainDistributionPipeline.yml/badge.svg?branch=v1.5)](https://github.com/Query-farm/hashfuncs/actions/workflows/MainDistributionPipeline.yml?query=branch%3Av1.5)
+[![DuckDB](https://img.shields.io/badge/DuckDB-extension-fdf1e0?logo=duckdb&logoColor=fff000)](https://query.farm/products/extensions/hashfuncs/)
+[![v2.0 build](https://github.com/Query-farm/hashfuncs/actions/workflows/MainDistributionPipeline.yml/badge.svg?branch=v2.0)](https://github.com/Query-farm/hashfuncs/actions/workflows/MainDistributionPipeline.yml?query=branch%3Av2.0)
 
 This `hashfuncs` extension adds functions for computing hash values from data.
 
@@ -18,11 +18,4 @@ This `hashfuncs` extension adds functions for computing hash values from data.
 
 Full documentation, including installation, usage, the function reference, and cookbook examples, is available at:
 
-**[https://query.farm/products/extensions/hashfuncs](https://query.farm/products/extensions/hashfuncs)**
-
-## Installation
-
-```sql
-install hashfuncs from community;
-load hashfuncs;
-```
+**[https://query.farm/products/extensions/hashfuncs/](https://query.farm/products/extensions/hashfuncs/)**
