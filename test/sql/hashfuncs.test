@@ -46,15 +46,32 @@ SELECT xxh3_128('hello world', 777);
 ----
 283192007746380917896797379546610829141
 
-#query I
-#SELECT rapidhash('hello world');
-#----
-#3397907815814400320
+query I
+SELECT rapidhash('hello world');
+----
+3397907815814400320
 
-#query I
-#SELECT rapidhash('hello world', 2023);
-#----
-#11789095433300219990
+query I
+SELECT rapidhash('hello world', 2023);
+----
+11789095433300219990
+
+# Micro and Nano match full RapidHash for inputs up to 80 and 48 bytes, and differ past that.
+query IIII
+SELECT rapidhash_micro('hello world'), rapidhash_micro('hello world', 2023),
+       rapidhash_nano('hello world'), rapidhash_nano('hello world', 2023);
+----
+3397907815814400320	11789095433300219990	3397907815814400320	11789095433300219990
+
+query IIIIII
+SELECT rapidhash(repeat('0123456789abcdef', 15) || '!'),
+       rapidhash(repeat('0123456789abcdef', 15) || '!', 2023),
+       rapidhash_micro(repeat('0123456789abcdef', 15) || '!'),
+       rapidhash_micro(repeat('0123456789abcdef', 15) || '!', 2023),
+       rapidhash_nano(repeat('0123456789abcdef', 15) || '!'),
+       rapidhash_nano(repeat('0123456789abcdef', 15) || '!', 2023);
+----
+5583329154290356605	9371435253136229368	14185993415016410437	7274169839060001693	16503782692568338120	17941402809254799473
 
 query I
 SELECT murmurhash3_32('hello world');

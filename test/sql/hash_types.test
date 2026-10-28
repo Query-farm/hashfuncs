@@ -1,0 +1,131 @@
+# name: test/sql/hash_types.test
+# description: input types hash their documented byte representation, and unsupported types fail at bind time
+# group: [sql]
+
+require hashfuncs
+
+# Fixed-width values hash their little-endian in-memory bytes.
+query IIII
+SELECT xxh64(42::INTEGER) = xxh64('\x2A\x00\x00\x00'::BLOB),
+       xxh64(42::BIGINT) = xxh64('\x2A\x00\x00\x00\x00\x00\x00\x00'::BLOB),
+       xxh64(42::UTINYINT) = xxh64('\x2A'::BLOB),
+       xxh64(42::INTEGER) = xxh64(42::BIGINT);
+----
+true	true	true	false
+
+# BOOLEAN hashes one byte.
+query II
+SELECT xxh64(true) = xxh64(1::UTINYINT), xxh64(false) = xxh64(0::UTINYINT);
+----
+true	true
+
+# DECIMAL hashes its stored integer, whose width follows the precision.
+query III
+SELECT xxh64(1.50::DECIMAL(4,2)) = xxh64(150::SMALLINT),
+       xxh64(1.50::DECIMAL(18,2)) = xxh64(150::BIGINT),
+       xxh64(1.50::DECIMAL(38,2)) = xxh64(150::HUGEINT);
+----
+true	true	true
+
+# Dates and times hash their stored counts.
+query IIIIII
+SELECT xxh64(DATE '2024-01-02') = xxh64((DATE '2024-01-02' - DATE '1970-01-01')::INTEGER),
+       xxh64(TIME '01:02:03') = xxh64(3723000000::BIGINT),
+       xxh64(TIMESTAMP '2024-01-02 03:04:05') = xxh64(epoch_us(TIMESTAMP '2024-01-02 03:04:05')),
+       xxh64(TIMESTAMP_MS '2024-01-02 03:04:05') = xxh64(epoch_ms(TIMESTAMP '2024-01-02 03:04:05')),
+       xxh64(TIMESTAMP_S '2024-01-02 03:04:05') = xxh64(epoch(TIMESTAMP '2024-01-02 03:04:05')::BIGINT),
+       xxh64(TIMESTAMP_NS '2024-01-02 03:04:05') = xxh64(epoch_ns(TIMESTAMP '2024-01-02 03:04:05'));
+----
+true	true	true	true	true	true
+
+query I
+SELECT xxh64(TIMESTAMPTZ '2024-01-02 03:04:05+00') = xxh64(epoch_us(TIMESTAMPTZ '2024-01-02 03:04:05+00'));
+----
+true
+
+query II
+SELECT xxh64(TIMETZ '01:02:03+05') IS NOT NULL, xxh64(TIMETZ '01:02:03+05') = xxh64(TIMETZ '01:02:03+05');
+----
+true	true
+
+# INTERVAL hashes its months, days and microseconds fields as stored, so equal intervals written with different
+# units hash differently.
+query II
+SELECT xxh64(INTERVAL '1 month 2 days 3 microseconds')
+           = xxh64('\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00'::BLOB),
+       xxh64(INTERVAL '1 day') = xxh64(INTERVAL '24 hours');
+----
+true	false
+
+# UUIDs hash their 16 RFC 4122 bytes.
+query I
+SELECT xxh64('0123abcd-4567-89ef-0123-456789abcdef'::UUID)
+     = xxh64(unhex('0123abcd456789ef0123456789abcdef'));
+----
+true
+
+# ENUM values hash their label.
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');
+
+query II
+SELECT xxh64('happy'::mood) = xxh64('happy'), murmurhash3_32('happy'::mood, 7) = murmurhash3_32('happy', 7);
+----
+true	true
+
+# A NULL literal hashes to NULL, with or without a seed.
+query IIII
+SELECT xxh64(NULL), xxh64(NULL, 1), xxh3_128(NULL), rapidhash(NULL::INTEGER);
+----
+NULL	NULL	NULL	NULL
+
+# Every algorithm hashes every supported type, with and without a seed, and keeps NULLs.
+statement ok
+CREATE TABLE all_types AS SELECT * FROM (VALUES
+  (true, -7::TINYINT, 300::USMALLINT, 1.5::DECIMAL(9,3), 2.5::FLOAT, 3.5::DOUBLE, DATE '2024-01-02',
+   TIME '01:02:03', TIMESTAMP '2024-01-02', TIMESTAMPTZ '2024-01-02 00:00:00+00', TIMETZ '01:02:03+00',
+   INTERVAL 3 DAYS, '0123abcd-4567-89ef-0123-456789abcdef'::UUID, 'ok'::mood, 'text', 'blob'::BLOB),
+  (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+) t(b, ti, us, d, f, db, dt, tm, ts, tstz, ttz, iv, u, e, s, bl);
+
+foreach func xxh32 xxh64 xxh3_64 xxh3_128 rapidhash rapidhash_micro rapidhash_nano murmurhash3_32 murmurhash3_128 murmurhash3_x64_128
+
+foreach col b ti us d f db dt tm ts tstz ttz iv u e s bl
+
+query II
+SELECT bool_and((${func}(${col}) IS NULL) = (${col} IS NULL)),
+       bool_and((${func}(${col}, 5) IS NULL) = (${col} IS NULL))
+FROM all_types;
+----
+true	true
+
+endloop
+
+endloop
+
+# Unsupported types are rejected when the query is bound, even if no rows would be hashed.
+statement error
+SELECT xxh64(x) FROM (SELECT [1, 2] AS x) WHERE false;
+----
+xxh64 cannot hash values of type INTEGER[]
+
+statement error
+SELECT murmurhash3_32({'a': 1}, 1);
+----
+murmurhash3_32 cannot hash values of type STRUCT(a INTEGER)
+
+# Prepared statement parameters are resolved from the value they are executed with.
+statement ok
+PREPARE hash_param AS SELECT xxh64(?) = xxh64('hello');
+
+query I
+EXECUTE hash_param('hello');
+----
+true
+
+# A constant input gives the same hash as the same value in a column.
+query I
+SELECT bool_and(xxh3_64(s) = xxh3_64('hello world') AND xxh3_64(s, 9) = xxh3_64('hello world', 9))
+FROM (SELECT 'hello world' AS s FROM range(3000));
+----
+true
