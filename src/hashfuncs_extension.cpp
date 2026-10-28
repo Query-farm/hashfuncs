@@ -11,6 +11,10 @@
 #include "xxhash.h"
 #include "rapidhash.h"
 #include "MurmurHash3.h"
+// rapidhash.h and wyhash.h both define these helper macros without guards; drop rapidhash's copies so a future
+// rapidhash update with different definitions can't clash with wyhash's.
+#undef _likely_
+#undef _unlikely_
 #include "third_party/wyhash/wyhash.h"
 #include "third_party/komihash/komihash.h"
 #include "hash_interop.hpp"
@@ -18,7 +22,7 @@
 #include "query_farm_telemetry.hpp"
 namespace duckdb {
 
-static constexpr const char *HASHFUNCS_VERSION = "2026102702";
+static constexpr const char *HASHFUNCS_VERSION = "2026102801";
 
 // The per-row hash wrappers must inline into HashFunction's loop: when the compiler declined to inline RapidHash's
 // wrapper, short strings hashed 16% slower.
@@ -93,34 +97,83 @@ struct RapidhashNanoOp {
 	}
 };
 
+// MurmurHash3_x86_32 as in the reference implementation, inlined so the loop specializes on a fixed-width input's
+// constant size instead of calling the library through an out-parameter.
 struct MurmurHash3_32Op {
 	using result_t = uint32_t;
 	using seed_t = uint32_t;
+	HASHFUNCS_ALWAYS_INLINE static uint32_t Rotl(uint32_t value, int bits) {
+		return (value << bits) | (value >> (32 - bits));
+	}
+	HASHFUNCS_ALWAYS_INLINE static uint32_t MixK1(uint32_t k1) {
+		k1 *= 0xcc9e2d51;
+		k1 = Rotl(k1, 15);
+		return k1 * 0x1b873593;
+	}
 	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
-		result_t result;
-		MurmurHash3_x86_32(data, static_cast<int>(size), seed, &result);
-		return result;
+		auto bytes = static_cast<const uint8_t *>(data);
+		const idx_t nblocks = size / 4;
+		uint32_t h1 = seed;
+		for (idx_t i = 0; i < nblocks; i++) {
+			uint32_t k1;
+			memcpy(&k1, bytes + i * 4, sizeof(k1));
+			h1 ^= MixK1(k1);
+			h1 = Rotl(h1, 13);
+			h1 = h1 * 5 + 0xe6546b64;
+		}
+		const uint8_t *tail = bytes + nblocks * 4;
+		uint32_t k1 = 0;
+		switch (size & 3) {
+		case 3:
+			k1 ^= uint32_t(tail[2]) << 16;
+			[[fallthrough]];
+		case 2:
+			k1 ^= uint32_t(tail[1]) << 8;
+			[[fallthrough]];
+		case 1:
+			k1 ^= tail[0];
+			h1 ^= MixK1(k1);
+		}
+		h1 ^= static_cast<uint32_t>(size);
+		h1 ^= h1 >> 16;
+		h1 *= 0x85ebca6b;
+		h1 ^= h1 >> 13;
+		h1 *= 0xc2b2ae35;
+		h1 ^= h1 >> 16;
+		return h1;
 	}
 };
+
+// The 128-bit MurmurHash3 functions take the input length as an int, so longer inputs (such as a huge nested value)
+// are rejected rather than silently truncated. Those functions are registered as fallible because of it.
+int MurmurHash3Length(idx_t size) {
+	if (size > static_cast<idx_t>(NumericLimits<int32_t>::Maximum())) {
+		throw InvalidInputException("MurmurHash3 can hash at most 2147483647 bytes, got %llu",
+		                            static_cast<unsigned long long>(size));
+	}
+	return static_cast<int>(size);
+}
 
 // The 128-bit MurmurHash3 variants write their two 64-bit words straight into the uhugeint_t, so on little-endian
 // platforms the first word is the lower half.
 struct MurmurHash3_128Op {
+	static constexpr bool CAN_THROW = true;
 	using result_t = uhugeint_t;
 	using seed_t = uint32_t;
 	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		result_t result;
-		MurmurHash3_x86_128(data, static_cast<int>(size), seed, &result);
+		MurmurHash3_x86_128(data, MurmurHash3Length(size), seed, &result);
 		return result;
 	}
 };
 
 struct MurmurHash3_X64_128Op {
+	static constexpr bool CAN_THROW = true;
 	using result_t = uhugeint_t;
 	using seed_t = uint32_t;
 	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		result_t result;
-		MurmurHash3_x64_128(data, static_cast<int>(size), seed, &result);
+		MurmurHash3_x64_128(data, MurmurHash3Length(size), seed, &result);
 		return result;
 	}
 };
@@ -241,123 +294,220 @@ struct UUIDReader : ValueReader<hugeint_t> {
 // ARRAY and LIST values with the same elements therefore hash the same.
 class NestedEncoder {
 public:
-	void Clear() {
-		buffer.clear();
+	// Resolves each node's type once per chunk, so encoding a value dispatches on a compact kind instead of the
+	// LogicalType, and reads data/selection/validity through cached pointers.
+	void Initialize(const RecursiveUnifiedVectorFormat &format) {
+		Plan(root, format);
 	}
-	const string &Bytes() const {
-		return buffer;
+	// Encodes the (valid) value at row `entry` and returns its size; the bytes are at Data().
+	idx_t Encode(idx_t entry) {
+		size = 0;
+		AppendValue(root, entry, root.sel->get_index(entry), false);
+		return size;
+	}
+	const data_t *Data() const {
+		return buffer.get();
 	}
 
-	void AppendField(const RecursiveUnifiedVectorFormat &format, idx_t entry) {
-		const auto idx = format.unified.sel->get_index(entry);
-		if (!format.unified.validity.RowIsValid(idx)) {
-			buffer.push_back('\0');
-			return;
+private:
+	enum class Kind : uint8_t { FIXED1, FIXED2, FIXED4, FIXED8, FIXED16, UUID, STRING, STRUCT, LIST, ARRAY };
+	struct Node {
+		Kind kind;
+		bool leaf = false;
+		idx_t array_size = 0;
+		const SelectionVector *sel = nullptr;
+		const ValidityMask *validity = nullptr;
+		const data_t *data = nullptr;
+		vector<Node> children;
+	};
+
+	Node root;
+	unsafe_unique_array<data_t> buffer;
+	idx_t size = 0;
+	idx_t capacity = 0;
+
+	static Kind FixedKind(idx_t width) {
+		switch (width) {
+		case 1:
+			return Kind::FIXED1;
+		case 2:
+			return Kind::FIXED2;
+		case 4:
+			return Kind::FIXED4;
+		case 8:
+			return Kind::FIXED8;
+		case 16:
+			return Kind::FIXED16;
+		default:
+			throw InternalException("hashfuncs: unexpected fixed width %llu", width);
 		}
-		buffer.push_back('\1');
-		AppendValue(format, entry);
 	}
 
-	void AppendValue(const RecursiveUnifiedVectorFormat &format, idx_t entry) {
-		const auto idx = format.unified.sel->get_index(entry);
+	static void Plan(Node &node, const RecursiveUnifiedVectorFormat &format) {
 		const auto &type = format.logical_type;
+		node.sel = format.unified.sel;
+		node.validity = &format.unified.validity;
+		node.data = format.unified.data;
+		node.leaf = true;
 		if (type.id() == LogicalTypeId::UUID) {
-			data_t bytes[16];
-			UUID::ToBlob(UnifiedVectorFormat::GetData<hugeint_t>(format.unified)[idx], bytes);
-			AppendBytes(bytes, sizeof(bytes));
+			node.kind = Kind::UUID;
 			return;
 		}
 		switch (type.InternalType()) {
 		case PhysicalType::STRUCT:
-			for (auto &child : format.children) {
-				AppendField(child, entry);
-			}
+			node.leaf = false;
+			node.kind = Kind::STRUCT;
 			break;
-		case PhysicalType::LIST: {
-			const auto &list = UnifiedVectorFormat::GetData<list_entry_t>(format.unified)[idx];
-			AppendLength(list.length);
-			for (idx_t i = 0; i < list.length; i++) {
-				AppendField(format.children[0], list.offset + i);
-			}
+		case PhysicalType::LIST:
+			node.leaf = false;
+			node.kind = Kind::LIST;
 			break;
-		}
-		case PhysicalType::ARRAY: {
-			const auto array_size = ArrayType::GetSize(type);
-			AppendLength(array_size);
-			for (idx_t i = 0; i < array_size; i++) {
-				AppendField(format.children[0], idx * array_size + i);
-			}
+		case PhysicalType::ARRAY:
+			node.leaf = false;
+			node.kind = Kind::ARRAY;
+			node.array_size = ArrayType::GetSize(type);
 			break;
-		}
-		case PhysicalType::VARCHAR: {
-			const auto &value = UnifiedVectorFormat::GetData<string_t>(format.unified)[idx];
-			AppendLength(value.GetSize());
-			AppendBytes(value.GetData(), value.GetSize());
-			break;
-		}
+		case PhysicalType::VARCHAR:
+			node.kind = Kind::STRING;
+			return;
 		case PhysicalType::BOOL:
-			AppendFixed<bool>(format.unified, idx);
-			break;
 		case PhysicalType::INT8:
-			AppendFixed<int8_t>(format.unified, idx);
-			break;
 		case PhysicalType::INT16:
-			AppendFixed<int16_t>(format.unified, idx);
-			break;
 		case PhysicalType::INT32:
-			AppendFixed<int32_t>(format.unified, idx);
-			break;
 		case PhysicalType::INT64:
-			AppendFixed<int64_t>(format.unified, idx);
-			break;
 		case PhysicalType::INT128:
-			AppendFixed<hugeint_t>(format.unified, idx);
-			break;
 		case PhysicalType::UINT8:
-			AppendFixed<uint8_t>(format.unified, idx);
-			break;
 		case PhysicalType::UINT16:
-			AppendFixed<uint16_t>(format.unified, idx);
-			break;
 		case PhysicalType::UINT32:
-			AppendFixed<uint32_t>(format.unified, idx);
-			break;
 		case PhysicalType::UINT64:
-			AppendFixed<uint64_t>(format.unified, idx);
-			break;
 		case PhysicalType::UINT128:
-			AppendFixed<uhugeint_t>(format.unified, idx);
-			break;
 		case PhysicalType::FLOAT:
-			AppendFixed<float>(format.unified, idx);
-			break;
 		case PhysicalType::DOUBLE:
-			AppendFixed<double>(format.unified, idx);
-			break;
 		case PhysicalType::INTERVAL:
-			AppendFixed<interval_t>(format.unified, idx);
-			break;
+			node.kind = FixedKind(GetTypeIdSize(type.InternalType()));
+			return;
 		default:
 			throw InternalException("hashfuncs: no nested encoding for type %s", type.ToString());
 		}
-	}
-
-private:
-	string buffer;
-
-	void AppendBytes(const void *data, idx_t size) {
-		buffer.append(const_char_ptr_cast(data), size);
-	}
-	void AppendLength(uint64_t length) {
-		char bytes[8];
-		for (idx_t i = 0; i < 8; i++) {
-			bytes[i] = static_cast<char>(length >> (8 * i));
+		node.children.resize(format.children.size());
+		for (idx_t i = 0; i < format.children.size(); i++) {
+			Plan(node.children[i], format.children[i]);
 		}
-		buffer.append(bytes, sizeof(bytes));
 	}
-	template <class T>
-	void AppendFixed(const UnifiedVectorFormat &format, idx_t idx) {
-		AppendBytes(&UnifiedVectorFormat::GetData<T>(format)[idx], sizeof(T));
+
+	// Returns room for `extra` more bytes at the end of the encoding.
+	inline data_t *Reserve(idx_t extra) {
+		if (size + extra > capacity) {
+			Grow(size + extra);
+		}
+		return buffer.get() + size;
+	}
+	void Grow(idx_t needed) {
+		const idx_t new_capacity = MaxValue<idx_t>(NextPowerOfTwo(needed), 256);
+		auto new_buffer = make_unsafe_uniq_array_uninitialized<data_t>(new_capacity);
+		if (size > 0) {
+			memcpy(new_buffer.get(), buffer.get(), size);
+		}
+		buffer = std::move(new_buffer);
+		capacity = new_capacity;
+	}
+	static inline data_t *StoreLength(data_t *out, uint64_t length) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		length = __builtin_bswap64(length);
+#endif
+		memcpy(out, &length, sizeof(length));
+		return out + 8;
+	}
+	template <idx_t WIDTH>
+	inline void AppendFixed(const Node &node, idx_t idx, bool marker) {
+		auto out = Reserve(WIDTH + 1);
+		*out = 1;
+		memcpy(out + marker, node.data + idx * WIDTH, WIDTH);
+		size += WIDTH + marker;
+	}
+
+	// Appends a field; leaf values are encoded inline, nested ones recurse.
+	HASHFUNCS_ALWAYS_INLINE void AppendField(const Node &node, idx_t entry) {
+		const auto idx = node.sel->get_index(entry);
+		if (!node.validity->RowIsValid(idx)) {
+			*Reserve(1) = 0;
+			size++;
+			return;
+		}
+		if (node.leaf) {
+			AppendLeaf(node, idx, true);
+		} else {
+			AppendValue(node, entry, idx, true);
+		}
+	}
+
+	// Appends a valid fixed-width, UUID or string value, preceded by the 0x01 field marker when `marker` is set.
+	HASHFUNCS_ALWAYS_INLINE void AppendLeaf(const Node &node, idx_t idx, bool marker) {
+		switch (node.kind) {
+		case Kind::FIXED1:
+			return AppendFixed<1>(node, idx, marker);
+		case Kind::FIXED2:
+			return AppendFixed<2>(node, idx, marker);
+		case Kind::FIXED4:
+			return AppendFixed<4>(node, idx, marker);
+		case Kind::FIXED8:
+			return AppendFixed<8>(node, idx, marker);
+		case Kind::FIXED16:
+			return AppendFixed<16>(node, idx, marker);
+		case Kind::UUID: {
+			auto out = Reserve(17);
+			*out = 1;
+			UUID::ToBlob(reinterpret_cast<const hugeint_t *>(node.data)[idx], out + marker);
+			size += 16 + marker;
+			return;
+		}
+		case Kind::STRING: {
+			const auto &value = reinterpret_cast<const string_t *>(node.data)[idx];
+			const auto length = value.GetSize();
+			auto out = Reserve(9 + length);
+			*out = 1;
+			out = StoreLength(out + marker, length);
+			memcpy(out, value.GetData(), length);
+			size += marker + 8 + length;
+			return;
+		}
+		default:
+			throw InternalException("hashfuncs: unexpected leaf encoding kind");
+		}
+	}
+
+	// Appends a valid nested value, preceded by the 0x01 field marker when `marker` is set.
+	void AppendValue(const Node &node, idx_t entry, idx_t idx, bool marker) {
+		if (marker) {
+			*Reserve(1) = 1;
+			size++;
+		}
+		switch (node.kind) {
+		case Kind::STRUCT:
+			for (auto &child : node.children) {
+				AppendField(child, entry);
+			}
+			break;
+		case Kind::LIST: {
+			const auto &list = reinterpret_cast<const list_entry_t *>(node.data)[idx];
+			StoreLength(Reserve(8), list.length);
+			size += 8;
+			for (idx_t i = 0; i < list.length; i++) {
+				AppendField(node.children[0], list.offset + i);
+			}
+			break;
+		}
+		case Kind::ARRAY: {
+			StoreLength(Reserve(8), node.array_size);
+			size += 8;
+			for (idx_t i = 0; i < node.array_size; i++) {
+				AppendField(node.children[0], idx * node.array_size + i);
+			}
+			break;
+		}
+		default:
+			throw InternalException("hashfuncs: unexpected nested encoding kind");
+		}
 	}
 };
 
@@ -366,7 +516,8 @@ struct NestedReader {
 	NestedEncoder encoder;
 
 	void Initialize(Vector &input, idx_t count) {
-		Vector::RecursiveToUnifiedFormat(input, count, format);
+		Vector::RecursiveToUnifiedFormat(input, format);
+		encoder.Initialize(format);
 	}
 	HASHFUNCS_ALWAYS_INLINE bool Lookup(idx_t row, idx_t &idx) const {
 		idx = format.unified.sel->get_index(row);
@@ -374,9 +525,8 @@ struct NestedReader {
 	}
 	template <class OP>
 	HASHFUNCS_ALWAYS_INLINE typename OP::result_t Hash(idx_t row, idx_t idx, typename OP::seed_t seed) {
-		encoder.Clear();
-		encoder.AppendValue(format, row);
-		return OP::Hash(encoder.Bytes().data(), encoder.Bytes().size(), seed);
+		const auto size = encoder.Encode(row);
+		return OP::Hash(encoder.Data(), size, seed);
 	}
 };
 
@@ -520,22 +670,31 @@ LogicalType HashInputType(const string &function_name, const LogicalType &type) 
 	case LogicalTypeId::SQLNULL:
 	case LogicalTypeId::ENUM:
 		return LogicalType::VARCHAR;
+	// Nested types keep their type unless a child needs converting, so no cast is added for them.
 	case LogicalTypeId::STRUCT:
 	case LogicalTypeId::TUPLE: {
 		child_list_t<LogicalType> children;
+		bool changed = false;
 		for (auto &child : StructType::GetChildTypes(type)) {
 			children.emplace_back(child.first, HashInputType(function_name, child.second));
+			changed = changed || children.back().second != child.second;
 		}
-		return LogicalType::STRUCT(std::move(children));
+		return changed ? LogicalType::STRUCT(std::move(children)) : type;
 	}
-	case LogicalTypeId::LIST:
-		return LogicalType::LIST(HashInputType(function_name, ListType::GetChildType(type)));
-	case LogicalTypeId::MAP:
-		return LogicalType::MAP(HashInputType(function_name, MapType::KeyType(type)),
-		                        HashInputType(function_name, MapType::ValueType(type)));
-	case LogicalTypeId::ARRAY:
-		return LogicalType::ARRAY(HashInputType(function_name, ArrayType::GetChildType(type)),
-		                          ArrayType::GetSize(type));
+	case LogicalTypeId::LIST: {
+		auto child = HashInputType(function_name, ListType::GetChildType(type));
+		return child != ListType::GetChildType(type) ? LogicalType::LIST(child) : type;
+	}
+	case LogicalTypeId::MAP: {
+		auto key = HashInputType(function_name, MapType::KeyType(type));
+		auto value = HashInputType(function_name, MapType::ValueType(type));
+		return key != MapType::KeyType(type) || value != MapType::ValueType(type) ? LogicalType::MAP(key, value) : type;
+	}
+	case LogicalTypeId::ARRAY: {
+		auto child = HashInputType(function_name, ArrayType::GetChildType(type));
+		return child != ArrayType::GetChildType(type) ? LogicalType::ARRAY(child, ArrayType::GetSize(type)) : type;
+	}
+
 	default:
 		throw BinderException(
 		    "%s cannot hash values of type %s. Supported types are BOOLEAN, integers, floating-point, "
@@ -590,6 +749,12 @@ FunctionParameter Positional(const string &name, LogicalType type) {
 	return FunctionParameter(Identifier(name), std::move(type), {}, FunctionParameterKind::POSITIONAL_ONLY);
 }
 
+// Whether an algorithm can raise an error while hashing (OP::CAN_THROW); most cannot.
+template <class OP, class = void>
+struct HashCanThrow : std::false_type {};
+template <class OP>
+struct HashCanThrow<OP, std::void_t<decltype(OP::CAN_THROW)>> : std::integral_constant<bool, OP::CAN_THROW> {};
+
 // Registers an algorithm as an unseeded and a seeded overload that accept any supported input type. An INVALID
 // seed_type registers only the unseeded overload.
 template <class OP>
@@ -598,14 +763,17 @@ void RegisterHashFunction(ExtensionLoader &loader, const string &name, const Log
                           const string &seed_name = "seed") {
 	const bool has_seed = seed_type.id() != LogicalTypeId::INVALID;
 	ScalarFunctionSet set {Identifier(name)};
-	ScalarFunction unseeded({Positional("value", LogicalType::ANY)}, result_type, nullptr);
-	unseeded.SetResolveTypesCallback(HashResolveTypes<OP>);
-	set.AddFunction(unseeded);
+	auto make_overload = [&](std::initializer_list<FunctionParameter> parameters) {
+		ScalarFunction function(parameters, result_type, nullptr);
+		function.SetResolveTypesCallback(HashResolveTypes<OP>);
+		if (HashCanThrow<OP>::value) {
+			function.SetFallible();
+		}
+		return function;
+	};
+	set.AddFunction(make_overload({Positional("value", LogicalType::ANY)}));
 	if (has_seed) {
-		ScalarFunction seeded({Positional("value", LogicalType::ANY), Positional(seed_name, seed_type)}, result_type,
-		                      nullptr);
-		seeded.SetResolveTypesCallback(HashResolveTypes<OP>);
-		set.AddFunction(seeded);
+		set.AddFunction(make_overload({Positional("value", LogicalType::ANY), Positional(seed_name, seed_type)}));
 	}
 	CreateScalarFunctionInfo info(set);
 	info.descriptions.push_back({/* parameter_types */ {LogicalType::ANY},

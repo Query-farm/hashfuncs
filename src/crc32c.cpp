@@ -1,11 +1,28 @@
 #include "vendored_hashes.hpp"
 
 #include <array>
+#include <cstring>
+
+#if (defined(__aarch64__) || defined(_M_ARM64)) && defined(__BYTE_ORDER__) &&                                          \
+    __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ && (defined(__GNUC__) || defined(__clang__))
+#define HASHFUNCS_CRC32C_ARM 1
+#include <arm_acle.h>
+#if defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_CRC32
+#define HWCAP_CRC32 (1 << 7)
+#endif
+#endif
+#elif (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+#define HASHFUNCS_CRC32C_X86 1
+#include <nmmintrin.h>
+#endif
 
 namespace duckdb {
 namespace hashfuncs {
 
-// CRC-32C (Castagnoli), reflected polynomial 0x82F63B78, computed in software with slicing-by-8 tables.
+// CRC-32C (Castagnoli), reflected polynomial 0x82F63B78. Uses the CPU's CRC32C instructions when it has them
+// (ARMv8 CRC extension, x86 SSE4.2), detected once at load time, and software slicing-by-8 tables otherwise.
 static constexpr uint32_t CRC32C_POLYNOMIAL = 0x82F63B78;
 
 using Crc32cTables = std::array<std::array<uint32_t, 256>, 8>;
@@ -30,9 +47,7 @@ static Crc32cTables MakeCrc32cTables() {
 
 static const Crc32cTables CRC32C_TABLES = MakeCrc32cTables();
 
-uint32_t Crc32cExtend(uint32_t crc, const void *data, size_t size) {
-	auto bytes = static_cast<const uint8_t *>(data);
-	crc = ~crc;
+static uint32_t Crc32cSoftware(uint32_t crc, const uint8_t *bytes, size_t size) {
 	while (size >= 8) {
 		// Combine eight bytes per step, reading them in little-endian order on every platform.
 		const uint32_t low =
@@ -48,6 +63,84 @@ uint32_t Crc32cExtend(uint32_t crc, const void *data, size_t size) {
 		bytes++;
 		size--;
 	}
+	return crc;
+}
+
+#if defined(HASHFUNCS_CRC32C_ARM)
+#if defined(__clang__)
+#define HASHFUNCS_CRC_TARGET __attribute__((target("crc")))
+#else
+#define HASHFUNCS_CRC_TARGET __attribute__((target("+crc")))
+#endif
+HASHFUNCS_CRC_TARGET static uint32_t Crc32cHardware(uint32_t crc, const uint8_t *bytes, size_t size) {
+	while (size >= 8) {
+		uint64_t word;
+		memcpy(&word, bytes, sizeof(word));
+		crc = __crc32cd(crc, word);
+		bytes += 8;
+		size -= 8;
+	}
+	if (size >= 4) {
+		uint32_t word;
+		memcpy(&word, bytes, sizeof(word));
+		crc = __crc32cw(crc, word);
+		bytes += 4;
+		size -= 4;
+	}
+	while (size > 0) {
+		crc = __crc32cb(crc, *bytes++);
+		size--;
+	}
+	return crc;
+}
+static bool DetectHardwareCrc32c() {
+#if defined(__APPLE__)
+	return true; // every Apple arm64 CPU has the CRC extension
+#elif defined(__linux__)
+	return (getauxval(AT_HWCAP) & HWCAP_CRC32) != 0;
+#elif defined(__ARM_FEATURE_CRC32)
+	return true;
+#else
+	return false;
+#endif
+}
+#elif defined(HASHFUNCS_CRC32C_X86)
+__attribute__((target("sse4.2"))) static uint32_t Crc32cHardware(uint32_t crc, const uint8_t *bytes, size_t size) {
+	uint64_t crc64 = crc;
+	while (size >= 8) {
+		uint64_t word;
+		memcpy(&word, bytes, sizeof(word));
+		crc64 = _mm_crc32_u64(crc64, word);
+		bytes += 8;
+		size -= 8;
+	}
+	crc = uint32_t(crc64);
+	while (size > 0) {
+		crc = _mm_crc32_u8(crc, *bytes++);
+		size--;
+	}
+	return crc;
+}
+static bool DetectHardwareCrc32c() {
+	// This runs from a static initializer, which may execute before the runtime has filled in the CPU model.
+	__builtin_cpu_init();
+	return __builtin_cpu_supports("sse4.2");
+}
+#else
+static uint32_t Crc32cHardware(uint32_t crc, const uint8_t *bytes, size_t size) {
+	return Crc32cSoftware(crc, bytes, size);
+}
+static bool DetectHardwareCrc32c() {
+	return false;
+}
+#endif
+
+static const bool HAS_HARDWARE_CRC32C = DetectHardwareCrc32c();
+
+uint32_t Crc32cExtend(uint32_t crc, const void *data, size_t size) {
+	auto bytes = static_cast<const uint8_t *>(data);
+	crc = ~crc;
+	crc = HAS_HARDWARE_CRC32C ? Crc32cHardware(crc, bytes, size) : Crc32cSoftware(crc, bytes, size);
 	return ~crc;
 }
 
