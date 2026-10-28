@@ -66,3 +66,63 @@ WHERE id % 3 = 2
        OR farm_fingerprint(k) IS DISTINCT FROM (CASE WHEN k IS NULL THEN NULL ELSE farm_fingerprint('key-' || id) END));
 ----
 0
+
+# Iceberg: types Iceberg can't bucket are rejected when the query is bound.
+statement error
+SELECT iceberg_bucket(x, 16) FROM (SELECT 1.5::DOUBLE AS x) WHERE false;
+----
+iceberg_bucket cannot hash values of type DOUBLE: Iceberg can't bucket it
+
+statement error
+SELECT iceberg_hash(true);
+----
+iceberg_hash cannot hash values of type BOOLEAN: Iceberg can't bucket it
+
+statement error
+SELECT iceberg_hash(1::UBIGINT);
+----
+iceberg_hash cannot hash values of type UBIGINT: Iceberg can't bucket it
+
+# NULL values go to Iceberg's null partition, so they return NULL.
+query III
+SELECT iceberg_hash(NULL), iceberg_bucket(NULL::VARCHAR, 16), iceberg_bucket('a', NULL);
+----
+NULL	NULL	NULL
+
+statement error
+SELECT iceberg_bucket('a', 0);
+----
+iceberg_bucket: the number of buckets must be between 1 and 2147483647, got 0
+
+# Iceberg's integer types all hash alike, and the bucket is the hash's low 31 bits modulo the bucket count.
+query II
+SELECT bool_and(iceberg_hash(i::SMALLINT) = iceberg_hash(i::BIGINT) AND iceberg_hash(i::INTEGER) = iceberg_hash(i)),
+       bool_and(iceberg_bucket(i, 97) = (iceberg_hash(i) & 2147483647) % 97)
+FROM range(-1000, 1000) t(i);
+----
+true	true
+
+# Jump hash: buckets are in range, and growing from n to n + 1 buckets only moves keys into the new bucket.
+query II
+SELECT bool_and(jump_hash(xxh3_64(i), 10) BETWEEN 0 AND 9),
+       bool_and(jump_hash(xxh3_64(i), 11) = jump_hash(xxh3_64(i), 10) OR jump_hash(xxh3_64(i), 11) = 10)
+FROM range(100000) t(i);
+----
+true	true
+
+# Roughly 1/11 of keys move when the eleventh bucket is added.
+query I
+SELECT count(*) FILTER (WHERE jump_hash(xxh3_64(i), 11) <> jump_hash(xxh3_64(i), 10)) BETWEEN 8500 AND 9700
+FROM range(100000) t(i);
+----
+true
+
+query II
+SELECT jump_hash(NULL::UBIGINT, 4), jump_hash(1::BIGINT, NULL);
+----
+NULL	NULL
+
+statement error
+SELECT jump_hash(1::BIGINT, 2147483648);
+----
+jump_hash: the number of buckets must be between 1 and 2147483647, got 2147483648
