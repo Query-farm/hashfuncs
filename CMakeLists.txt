@@ -31,6 +31,10 @@ src/query_farm_telemetry.cpp)
 # collide with it.
 set_source_files_properties(src/third_party/farmhash/farmhash.cc src/vendored_hashes.cpp PROPERTIES
   COMPILE_DEFINITIONS NAMESPACE_FOR_HASH_FUNCTIONS=hashfuncs_farmhash)
+# FarmHash uses __builtin_expect unless told not to; MSVC doesn't have it.
+if(MSVC)
+  set_property(SOURCE src/third_party/farmhash/farmhash.cc APPEND PROPERTY COMPILE_DEFINITIONS FARMHASH_NO_BUILTIN_EXPECT)
+endif()
 
 # CityHash v1.0.2 includes its own headers with angle brackets; keep its config.h off the global include path.
 set_source_files_properties(src/third_party/cityhash102/city.cc PROPERTIES INCLUDE_DIRECTORIES
