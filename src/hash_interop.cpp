@@ -341,6 +341,52 @@ typename HASHER::result_t SparkHashValue(const RecursiveUnifiedVectorFormat &for
 	}
 }
 
+// Updates each row's running hash with the row's value in `input`; NULLs leave the hash unchanged.
+template <class HASHER, class T, class HASH_VALUE>
+void SparkHashFlatColumn(Vector &input, idx_t count, typename HASHER::result_t *hashes, HASH_VALUE hash_value) {
+	UnifiedVectorFormat format;
+	input.ToUnifiedFormat(count, format);
+	auto values = UnifiedVectorFormat::GetData<T>(format);
+	for (idx_t i = 0; i < count; i++) {
+		const auto idx = format.sel->get_index(i);
+		if (format.validity.RowIsValid(idx)) {
+			hashes[i] = hash_value(values[idx], hashes[i]);
+		}
+	}
+}
+
+template <class HASHER>
+void SparkHashColumn(Vector &input, idx_t count, typename HASHER::result_t *hashes) {
+	using result_t = typename HASHER::result_t;
+	const auto &type = input.GetType();
+	switch (type.id()) {
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::DATE:
+		return SparkHashFlatColumn<HASHER, int32_t>(input, count, hashes,
+		                                            [](int32_t v, result_t seed) { return HASHER::HashInt(v, seed); });
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return SparkHashFlatColumn<HASHER, int64_t>(input, count, hashes,
+		                                            [](int64_t v, result_t seed) { return HASHER::HashLong(v, seed); });
+	case LogicalTypeId::DOUBLE:
+		return SparkHashFlatColumn<HASHER, double>(
+		    input, count, hashes, [](double v, result_t seed) { return HASHER::HashLong(SparkDoubleBits(v), seed); });
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::BLOB:
+		return SparkHashFlatColumn<HASHER, string_t>(input, count, hashes, [](const string_t &v, result_t seed) {
+			return HASHER::HashBytes(const_data_ptr_cast(v.GetData()), v.GetSize(), seed);
+		});
+	default: {
+		RecursiveUnifiedVectorFormat format;
+		Vector::RecursiveToUnifiedFormat(input, count, format);
+		for (idx_t i = 0; i < count; i++) {
+			hashes[i] = SparkHashValue<HASHER>(format, i, hashes[i]);
+		}
+	}
+	}
+}
+
 template <class HASHER>
 void SparkHashFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	using result_t = typename HASHER::result_t;
@@ -352,16 +398,13 @@ void SparkHashFunction(DataChunk &args, ExpressionState &state, Vector &result) 
 	result.SetVectorType(all_constant ? VectorType::CONSTANT_VECTOR : VectorType::FLAT_VECTOR);
 	auto results = all_constant ? ConstantVector::GetData<result_t>(result) : FlatVector::GetData<result_t>(result);
 
-	vector<RecursiveUnifiedVectorFormat> formats(args.ColumnCount());
-	for (idx_t col = 0; col < args.ColumnCount(); col++) {
-		Vector::RecursiveToUnifiedFormat(args.data[col], count, formats[col]);
-	}
+	// Spark chains each value's hash into the next as its seed, so the hashes can be computed a column at a time:
+	// the type is dispatched once per column, and only nested columns recurse per value.
 	for (idx_t i = 0; i < count; i++) {
-		result_t hash = HASHER::SEED;
-		for (auto &format : formats) {
-			hash = SparkHashValue<HASHER>(format, i, hash);
-		}
-		results[i] = hash;
+		results[i] = HASHER::SEED;
+	}
+	for (idx_t col = 0; col < args.ColumnCount(); col++) {
+		SparkHashColumn<HASHER>(args.data[col], count, results);
 	}
 }
 
@@ -393,17 +436,23 @@ LogicalType SparkInputType(const string &function_name, const LogicalType &type)
 	// A NULL literal is skipped, like any NULL.
 	case LogicalTypeId::SQLNULL:
 		return LogicalType::INTEGER;
-	case LogicalTypeId::LIST:
-		return LogicalType::LIST(SparkInputType(function_name, ListType::GetChildType(type)));
-	case LogicalTypeId::ARRAY:
-		return LogicalType::ARRAY(SparkInputType(function_name, ArrayType::GetChildType(type)),
-		                          ArrayType::GetSize(type));
+	// Nested types keep their type unless a child needs converting, so no cast is added for them.
+	case LogicalTypeId::LIST: {
+		auto child = SparkInputType(function_name, ListType::GetChildType(type));
+		return child != ListType::GetChildType(type) ? LogicalType::LIST(child) : type;
+	}
+	case LogicalTypeId::ARRAY: {
+		auto child = SparkInputType(function_name, ArrayType::GetChildType(type));
+		return child != ArrayType::GetChildType(type) ? LogicalType::ARRAY(child, ArrayType::GetSize(type)) : type;
+	}
 	case LogicalTypeId::STRUCT: {
 		child_list_t<LogicalType> children;
+		bool changed = false;
 		for (auto &child : StructType::GetChildTypes(type)) {
 			children.emplace_back(child.first, SparkInputType(function_name, child.second));
+			changed = changed || children.back().second != child.second;
 		}
-		return LogicalType::STRUCT(std::move(children));
+		return changed ? LogicalType::STRUCT(std::move(children)) : type;
 	}
 	case LogicalTypeId::UNKNOWN:
 		throw ParameterNotResolvedException();
@@ -466,11 +515,13 @@ void RegisterInteropFunctions(ExtensionLoader &loader) {
 
 	RegisterSparkFunction(loader, "spark_hash", LogicalType::INTEGER, SparkHashFunction<SparkMurmur3>,
 	                      "Computes Spark's hash() of one or more values: Murmur3 x86_32 with seed 42, each value "
-	                      "seeding the next, with Spark's type rules. NULLs are skipped");
+	                      "seeding the next, with Spark's type rules. NULLs are skipped. TIMESTAMP hashes like Spark's "
+	                      "TIMESTAMP_NTZ and TIMESTAMPTZ like Spark's TIMESTAMP, both as microseconds");
 
 	RegisterSparkFunction(loader, "spark_xxhash64", LogicalType::BIGINT, SparkHashFunction<SparkXXH64>,
 	                      "Computes Spark's xxhash64() of one or more values: XXH64 with seed 42, each value seeding "
-	                      "the next, with Spark's type rules. NULLs are skipped");
+	                      "the next, with Spark's type rules. NULLs are skipped. TIMESTAMP hashes like Spark's "
+	                      "TIMESTAMP_NTZ and TIMESTAMPTZ like Spark's TIMESTAMP, both as microseconds");
 
 	RegisterStringFunction(loader, "kafka_murmur2", LogicalType::INTEGER, StringHashFunction<KafkaMurmur2Hasher>,
 	                       "Computes Kafka's murmur2 hash of a serialized record key, as used by Kafka's default "
@@ -478,8 +529,10 @@ void RegisterInteropFunctions(ExtensionLoader &loader) {
 
 	ScalarFunctionSet kafka_partition_set("kafka_partition");
 	for (auto &key_type : {LogicalType::VARCHAR, LogicalType::BLOB}) {
-		kafka_partition_set.AddFunction(
-		    ScalarFunction({key_type, LogicalType::BIGINT}, LogicalType::INTEGER, KafkaPartitionFunction));
+		ScalarFunction kafka_partition({key_type, LogicalType::BIGINT}, LogicalType::INTEGER, KafkaPartitionFunction);
+		// An invalid partition count raises an error while the query runs.
+		kafka_partition.SetFallible();
+		kafka_partition_set.AddFunction(kafka_partition);
 	}
 	CreateScalarFunctionInfo kafka_partition_info(kafka_partition_set);
 	for (auto &key_type : {LogicalType::VARCHAR, LogicalType::BLOB}) {

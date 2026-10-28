@@ -3,8 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
-// Wrappers around the vendored hash implementations in src/third_party. They are compiled in their own translation
-// units so the vendored headers' macros and typedefs stay out of the extension code.
+// Wrappers around the vendored hash implementations in src/third_party that are compiled in their own translation
+// units (FarmHash, CityHash, SipHash, CRC-32C), so those headers' macros and typedefs stay out of the extension code.
+// The header-only wyhash and komihash are included directly by hashfuncs_extension.cpp.
 namespace duckdb {
 namespace hashfuncs {
 

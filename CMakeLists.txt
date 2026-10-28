@@ -27,6 +27,11 @@ src/third_party/farmhash/farmhash.cc
 src/third_party/cityhash102/city.cc
 src/query_farm_telemetry.cpp)
 
+# FarmHash defaults to the namespace `util`; give it a private one so a static build bundling another FarmHash can't
+# collide with it.
+set_source_files_properties(src/third_party/farmhash/farmhash.cc src/vendored_hashes.cpp PROPERTIES
+  COMPILE_DEFINITIONS NAMESPACE_FOR_HASH_FUNCTIONS=hashfuncs_farmhash)
+
 # CityHash v1.0.2 includes its own headers with angle brackets; keep its config.h off the global include path.
 set_source_files_properties(src/third_party/cityhash102/city.cc PROPERTIES INCLUDE_DIRECTORIES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/cityhash102)

@@ -12,7 +12,7 @@ namespace duckdb {
 namespace hashfuncs {
 
 uint64_t FarmFingerprint64(const char *data, size_t size) {
-	return util::Fingerprint64(data, size);
+	return NAMESPACE_FOR_HASH_FUNCTIONS::Fingerprint64(data, size);
 }
 
 uint64_t CityHash64V102(const char *data, size_t size) {
