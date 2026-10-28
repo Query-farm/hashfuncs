@@ -1,535 +1,306 @@
 #include "hashfuncs_extension.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/string_util.hpp"
+#include "duckdb/common/exception/binder_exception.hpp"
+#include "duckdb/common/types/uuid.hpp"
+#include "duckdb/common/vector/string_vector.hpp"
+#include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
-#include "duckdb/common/types/string_type.hpp"
-#include "duckdb/common/vector/flat_vector.hpp"
-#include "duckdb/common/vector/string_vector.hpp"
-#include "duckdb/common/vector/unified_vector_format.hpp"
 #include "xxhash.h"
 #include "rapidhash.h"
 #include "MurmurHash3.h"
 #include "query_farm_telemetry.hpp"
 namespace duckdb {
 
+static constexpr const char *HASHFUNCS_VERSION = "2026102701";
+
 namespace {
-// Hash algorithm enumeration for template specialization
-enum class HashAlgorithm {
-	XXH32,
-	XXH64,
-	XXH3_64,
-	XXH3_128,
-	RAPIDHASH,
-	//	RAPIDHASH_MICRO,
-	//	RAPIDHASH_NANO,
-	MURMURHASH3_32,
-	MURMURHASH3_128,
-	MURMURHASH3_X64_128
+
+// Each algorithm hashes a byte range with a seed. The unseeded SQL functions pass seed 0, which every library
+// defines to give the same result as its unseeded entry point.
+struct XXH32Op {
+	using result_t = uint32_t;
+	using seed_t = uint32_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		return XXH32(data, size, seed);
+	}
 };
 
-// Type trait to map hash algorithm to its seed type
-template <HashAlgorithm Algorithm>
-struct hash_seed_type {
-	// Default case - will cause compilation error for unmapped algorithms
-	using type = void;
+struct XXH64Op {
+	using result_t = uint64_t;
+	using seed_t = uint64_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		return XXH64(data, size, seed);
+	}
 };
 
-// Specializations for each algorithm
-template <>
-struct hash_seed_type<HashAlgorithm::XXH32> {
-	using type = uint32_t; // XXH32 uses 32-bit seed
+struct XXH3_64Op {
+	using result_t = uint64_t;
+	using seed_t = uint64_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		return XXH3_64bits_withSeed(data, size, seed);
+	}
 };
 
-template <>
-struct hash_seed_type<HashAlgorithm::XXH64> {
-	using type = uint64_t; // XXH64 uses 64-bit seed
+struct XXH3_128Op {
+	using result_t = uhugeint_t;
+	using seed_t = uint64_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		auto hash = XXH3_128bits_withSeed(data, size, seed);
+		// The historical xxh3_128() layout is kept for stored-key compatibility: uhugeint_t(upper, lower) puts low64
+		// in the upper half. xxh3_128_hex() returns xxHash's canonical byte order instead.
+		return uhugeint_t(hash.low64, hash.high64);
+	}
 };
 
-template <>
-struct hash_seed_type<HashAlgorithm::XXH3_64> {
-	using type = uint64_t; // XXH3_64 uses 64-bit seed
+struct RapidhashOp {
+	using result_t = uint64_t;
+	using seed_t = uint64_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		return rapidhash_withSeed(data, size, seed);
+	}
 };
 
-template <>
-struct hash_seed_type<HashAlgorithm::XXH3_128> {
-	using type = uint64_t; // XXH3_128 uses 64-bit seed
+struct RapidhashMicroOp {
+	using result_t = uint64_t;
+	using seed_t = uint64_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		return rapidhashMicro_withSeed(data, size, seed);
+	}
 };
 
-template <>
-struct hash_seed_type<HashAlgorithm::RAPIDHASH> {
-	using type = uint64_t; // RapidHash typically uses 64-bit seed
+struct RapidhashNanoOp {
+	using result_t = uint64_t;
+	using seed_t = uint64_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		return rapidhashNano_withSeed(data, size, seed);
+	}
 };
 
-// template <>
-// struct hash_seed_type<HashAlgorithm::RAPIDHASH_MICRO> {
-// 	using type = uint64_t; // RapidHash micro variant
-// };
-
-// template <>
-// struct hash_seed_type<HashAlgorithm::RAPIDHASH_NANO> {
-// 	using type = uint64_t; // RapidHash nano variant
-// };
-
-template <>
-struct hash_seed_type<HashAlgorithm::MURMURHASH3_32> {
-	using type = uint32_t; // MurmurHash3 32-bit uses 32-bit seed
+struct MurmurHash3_32Op {
+	using result_t = uint32_t;
+	using seed_t = uint32_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		result_t result;
+		MurmurHash3_x86_32(data, static_cast<int>(size), seed, &result);
+		return result;
+	}
 };
 
-template <>
-struct hash_seed_type<HashAlgorithm::MURMURHASH3_128> {
-	using type = uint32_t; // MurmurHash3 128-bit uses 32-bit seed
+// The 128-bit MurmurHash3 variants write their two 64-bit words straight into the uhugeint_t, so on little-endian
+// platforms the first word is the lower half.
+struct MurmurHash3_128Op {
+	using result_t = uhugeint_t;
+	using seed_t = uint32_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		result_t result;
+		MurmurHash3_x86_128(data, static_cast<int>(size), seed, &result);
+		return result;
+	}
 };
 
-template <>
-struct hash_seed_type<HashAlgorithm::MURMURHASH3_X64_128> {
-	using type = uint32_t; // MurmurHash3 x64 128-bit uses 32-bit seed
+struct MurmurHash3_X64_128Op {
+	using result_t = uhugeint_t;
+	using seed_t = uint32_t;
+	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		result_t result;
+		MurmurHash3_x64_128(data, static_cast<int>(size), seed, &result);
+		return result;
+	}
 };
 
-template <HashAlgorithm Algorithm>
-using hash_seed_type_t = typename hash_seed_type<Algorithm>::type;
+// Fixed-width values hash their in-memory bytes, so the hash depends on the value's width: 42::INTEGER and
+// 42::BIGINT hash differently.
+template <class T>
+struct ValueBytes {
+	using input_t = T;
+	template <class OP>
+	static typename OP::result_t Hash(const T &value, typename OP::seed_t seed) {
+		return OP::Hash(&value, sizeof(T), seed);
+	}
+};
 
-template <typename TargetType, typename ResultType, HashAlgorithm Algorithm>
-inline void hash_fixed_type_generic_with_seed(const UnifiedVectorFormat &input_vdata, const idx_t row_count,
-                                              const Vector &input_vector, const UnifiedVectorFormat &seed_vdata,
-                                              const Vector &seed_vector, ValidityMask &result_validity,
-                                              ResultType *results) {
-	auto inputs = UnifiedVectorFormat::GetData<TargetType>(input_vdata);
+// VARCHAR and BLOB values hash their contents.
+struct StringBytes {
+	using input_t = string_t;
+	template <class OP>
+	static typename OP::result_t Hash(const string_t &value, typename OP::seed_t seed) {
+		return OP::Hash(value.GetData(), value.GetSize(), seed);
+	}
+};
 
-	using SeedType = hash_seed_type_t<Algorithm>;
-	auto seeds = UnifiedVectorFormat::GetData<SeedType>(seed_vdata);
+// UUIDs hash their 16 RFC 4122 bytes, matching a hash of the UUID's binary form in other systems.
+struct UUIDBytes {
+	using input_t = hugeint_t;
+	template <class OP>
+	static typename OP::result_t Hash(const hugeint_t &value, typename OP::seed_t seed) {
+		data_t bytes[16];
+		UUID::ToBlob(value, bytes);
+		return OP::Hash(bytes, sizeof(bytes), seed);
+	}
+};
 
-	for (idx_t i = 0; i < row_count; i++) {
-		if (!input_vdata.validity.RowIsValid(input_vdata.sel->get_index(i)) ||
-		    !seed_vdata.validity.RowIsValid(seed_vdata.sel->get_index(i))) {
-			result_validity.SetInvalid(i);
+// Hashes each row straight from the input vector's memory. DuckDB's Unary/BinaryExecutor pass every value by copy,
+// and hashing the bytes of a just-copied short string measured about 20% slower.
+template <class OP, class KEY, bool SEEDED>
+void HashFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	using input_t = typename KEY::input_t;
+	using seed_t = typename OP::seed_t;
+	using result_t = typename OP::result_t;
+
+	// Constant arguments are hashed once into a constant result.
+	bool all_constant = true;
+	for (auto &arg : args.data) {
+		all_constant = all_constant && arg.GetVectorType() == VectorType::CONSTANT_VECTOR;
+	}
+	const idx_t count = all_constant ? 1 : args.size();
+	result.SetVectorType(all_constant ? VectorType::CONSTANT_VECTOR : VectorType::FLAT_VECTOR);
+	auto results =
+	    all_constant ? ConstantVector::GetData<result_t>(result) : FlatVector::GetDataMutable<result_t>(result);
+
+	UnifiedVectorFormat input_data;
+	args.data[0].ToUnifiedFormat(input_data);
+	auto inputs = UnifiedVectorFormat::GetData<input_t>(input_data);
+	UnifiedVectorFormat seed_data;
+	if constexpr (SEEDED) {
+		args.data[1].ToUnifiedFormat(seed_data);
+	}
+
+	for (idx_t i = 0; i < count; i++) {
+		const auto input_idx = input_data.sel->get_index(i);
+		bool valid = input_data.validity.RowIsValid(input_idx);
+		seed_t seed = 0;
+		if constexpr (SEEDED) {
+			const auto seed_idx = seed_data.sel->get_index(i);
+			valid = valid && seed_data.validity.RowIsValid(seed_idx);
+			if (valid) {
+				seed = UnifiedVectorFormat::GetData<seed_t>(seed_data)[seed_idx];
+			}
+		}
+		if (!valid) {
+			if (all_constant) {
+				ConstantVector::SetNull(result, true);
+			} else {
+				FlatVector::ValidityMutable(result).SetInvalid(i);
+			}
 			continue;
 		}
-
-		const auto input_idx = input_vdata.sel->get_index(i);
-		const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
-
-		if constexpr (Algorithm == HashAlgorithm::XXH32) {
-			// 32-bit hash using XXH32
-			results[i] = XXH32(&inputs[input_idx], sizeof(TargetType), seed_value);
-		} else if constexpr (Algorithm == HashAlgorithm::XXH64) {
-			// 64-bit hash using XXH64
-			results[i] = XXH64(&inputs[input_idx], sizeof(TargetType), seed_value);
-		} else if constexpr (Algorithm == HashAlgorithm::XXH3_64) {
-			// 64-bit hash using XXH3
-			results[i] = XXH3_64bits_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
-		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
-			// 64-bit hash using RapidHash
-			results[i] = rapidhash_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
-			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-			// 	// 64-bit hash using RapidHash Micro
-			// 	results[i] = rapidhashMicro_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
-			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-			// 	// 64-bit hash using RapidHash Nano
-			// 	results[i] = rapidhashNano_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
-		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
-			// 32-bit hash using MurmurHash3
-			MurmurHash3_x86_32(&inputs[input_idx], sizeof(TargetType), seed_value, &results[i]);
-		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_128) {
-			// 128-bit hash using MurmurHash3
-			MurmurHash3_x86_128(&inputs[input_idx], sizeof(TargetType), seed_value, &results[i]);
-		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_X64_128) {
-			// 128-bit hash using MurmurHash3 x64
-			MurmurHash3_x64_128(&inputs[input_idx], sizeof(TargetType), seed_value, &results[i]);
-		} else if constexpr (Algorithm == HashAlgorithm::XXH3_128) {
-			// 128-bit hash
-			XXH128_hash_t hash128 = XXH3_128bits_withSeed(&inputs[input_idx], sizeof(TargetType), seed_value);
-			results[i] = uhugeint_t {hash128.low64, hash128.high64};
-		}
+		results[i] = KEY::template Hash<OP>(inputs[input_idx], seed);
 	}
 }
 
-// Template function for fixed-size types - now supports all hash algorithms
-template <typename TargetType, typename ResultType, HashAlgorithm Algorithm>
-inline void hash_fixed_type_generic(const UnifiedVectorFormat &vdata, const idx_t row_count, const Vector &vector,
-                                    ValidityMask &result_validity, ResultType *results) {
-	auto inputs = UnifiedVectorFormat::GetData<TargetType>(vdata);
-
-	for (idx_t i = 0; i < row_count; i++) {
-		if (!vdata.validity.RowIsValid(vdata.sel->get_index(i))) {
-			result_validity.SetInvalid(i);
-			continue;
-		}
-
-		const auto input_idx = vdata.sel->get_index(i);
-		if constexpr (Algorithm == HashAlgorithm::XXH32) {
-			// 32-bit hash using XXH32
-			results[i] = XXH32(&inputs[input_idx], sizeof(TargetType), 0);
-		} else if constexpr (Algorithm == HashAlgorithm::XXH64) {
-			// 64-bit hash using XXH64
-			results[i] = XXH64(&inputs[input_idx], sizeof(TargetType), 0);
-		} else if constexpr (Algorithm == HashAlgorithm::XXH3_64) {
-			// 64-bit hash using XXH3
-			results[i] = XXH3_64bits(&inputs[input_idx], sizeof(TargetType));
-		} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
-			// 64-bit hash using RapidHash
-			results[i] = rapidhash(&inputs[input_idx], sizeof(TargetType));
-			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-			// 	// 64-bit hash using RapidHash Micro
-			// 	results[i] = rapidhashMicro(&inputs[input_idx], sizeof(TargetType));
-			// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-			// 	// 64-bit hash using RapidHash Nano
-			// 	results[i] = rapidhashNano(&inputs[input_idx], sizeof(TargetType));
-		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
-			// 32-bit hash using MurmurHash3
-			MurmurHash3_x86_32(&inputs[input_idx], sizeof(TargetType), 0, &results[i]);
-		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_128) {
-			// 128-bit hash using MurmurHash3
-			MurmurHash3_x86_128(&inputs[input_idx], sizeof(TargetType), 0, &results[i]);
-		} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_X64_128) {
-			// 128-bit hash using MurmurHash3 x64
-			MurmurHash3_x64_128(&inputs[input_idx], sizeof(TargetType), 0, &results[i]);
-		} else if constexpr (Algorithm == HashAlgorithm::XXH3_128) {
-			// 128-bit hash
-			XXH128_hash_t hash128 = XXH3_128bits(&inputs[input_idx], sizeof(TargetType));
-			results[i] = uhugeint_t {hash128.low64, hash128.high64};
-		}
+template <class OP, class KEY>
+scalar_function_t HashImplementation(bool seeded) {
+	if (seeded) {
+		return HashFunction<OP, KEY, true>;
 	}
+	return HashFunction<OP, KEY, false>;
 }
 
-// Generic hash function template
-template <typename ResultType, HashAlgorithm Algorithm>
-inline void hashfunc_generic(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &input_vector = args.data[0];
-	const auto row_count = args.size();
-
-	// Early return for empty chunks
-	if (row_count == 0) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-		return;
+// Picks the implementation for an input type already accepted by HashInputType().
+template <class OP>
+scalar_function_t GetHashFunction(const LogicalType &type, bool seeded) {
+	if (type.id() == LogicalTypeId::UUID) {
+		return HashImplementation<OP, UUIDBytes>(seeded);
 	}
-
-	UnifiedVectorFormat vdata;
-	input_vector.ToUnifiedFormat(vdata);
-
-	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &result_validity = FlatVector::ValidityMutable(result);
-	auto results = FlatVector::GetDataMutable<ResultType>(result);
-
-	const auto type_id = input_vector.GetType().id();
-
-	switch (type_id) {
-	case LogicalTypeId::BLOB:
-	case LogicalTypeId::VARCHAR: {
-		auto inputs = UnifiedVectorFormat::GetData<string_t>(vdata);
-		for (idx_t i = 0; i < row_count; i++) {
-			if (!vdata.validity.RowIsValid(vdata.sel->get_index(i))) {
-				result_validity.SetInvalid(i);
-				continue;
-			}
-			const auto &str = inputs[vdata.sel->get_index(i)];
-
-			if constexpr (Algorithm == HashAlgorithm::XXH32) {
-				// 32-bit hash using XXH32
-				results[i] = XXH32(str.GetData(), str.GetSize(), 0);
-			} else if constexpr (Algorithm == HashAlgorithm::XXH64) {
-				// 64-bit hash using XXH64
-				results[i] = XXH64(str.GetData(), str.GetSize(), 0);
-			} else if constexpr (Algorithm == HashAlgorithm::XXH3_64) {
-				results[i] = XXH3_64bits(str.GetData(), str.GetSize());
-			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
-				results[i] = rapidhash(str.GetData(), str.GetSize());
-				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-				// 	results[i] = rapidhashMicro(str.GetData(), str.GetSize());
-				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-				// 	results[i] = rapidhashNano(str.GetData(), str.GetSize());
-			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
-				// 32-bit hash using MurmurHash3
-				MurmurHash3_x86_32(str.GetData(), str.GetSize(), 0, &results[i]);
-			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_128) {
-				// 128-bit hash using MurmurHash3
-				MurmurHash3_x86_128(str.GetData(), str.GetSize(), 0, &results[i]);
-			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_X64_128) {
-				// 128-bit hash using MurmurHash3 x64
-				MurmurHash3_x64_128(str.GetData(), str.GetSize(), 0, &results[i]);
-			} else if constexpr (Algorithm == HashAlgorithm::XXH3_128) {
-				// 128-bit hash
-				XXH128_hash_t hash128 = XXH3_128bits(str.GetData(), str.GetSize());
-				results[i] = uhugeint_t {hash128.low64, hash128.high64};
-			}
-		}
-		break;
-	}
-
-	case LogicalTypeId::HUGEINT:
-		hash_fixed_type_generic<hugeint_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                          results);
-		break;
-
-	case LogicalTypeId::UHUGEINT:
-		hash_fixed_type_generic<uhugeint_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                           results);
-		break;
-
-	case LogicalTypeId::USMALLINT:
-		hash_fixed_type_generic<uint16_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                         results);
-		break;
-
-	case LogicalTypeId::UINTEGER:
-		hash_fixed_type_generic<uint32_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                         results);
-		break;
-
-	case LogicalTypeId::INTEGER:
-		hash_fixed_type_generic<int32_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                        results);
-		break;
-
-	case LogicalTypeId::BIGINT:
-		hash_fixed_type_generic<int64_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                        results);
-		break;
-
-	case LogicalTypeId::UBIGINT:
-		hash_fixed_type_generic<uint64_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                         results);
-		break;
-
-	case LogicalTypeId::SMALLINT:
-		hash_fixed_type_generic<int16_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                        results);
-		break;
-
-	case LogicalTypeId::UTINYINT:
-		hash_fixed_type_generic<uint8_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                        results);
-		break;
-
-	case LogicalTypeId::TINYINT:
-		hash_fixed_type_generic<int8_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                       results);
-		break;
-
-	case LogicalTypeId::FLOAT:
-		hash_fixed_type_generic<float, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::DOUBLE:
-		hash_fixed_type_generic<double, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                       results);
-		break;
-
-	case LogicalTypeId::DATE:
-		hash_fixed_type_generic<uint32_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                         results);
-		break;
-
-	case LogicalTypeId::TIME:
-		hash_fixed_type_generic<uint64_t, ResultType, Algorithm>(vdata, row_count, input_vector, result_validity,
-		                                                         results);
-		break;
-
+	switch (type.InternalType()) {
+	case PhysicalType::BOOL:
+		return HashImplementation<OP, ValueBytes<bool>>(seeded);
+	case PhysicalType::INT8:
+		return HashImplementation<OP, ValueBytes<int8_t>>(seeded);
+	case PhysicalType::INT16:
+		return HashImplementation<OP, ValueBytes<int16_t>>(seeded);
+	case PhysicalType::INT32:
+		return HashImplementation<OP, ValueBytes<int32_t>>(seeded);
+	case PhysicalType::INT64:
+		return HashImplementation<OP, ValueBytes<int64_t>>(seeded);
+	case PhysicalType::INT128:
+		return HashImplementation<OP, ValueBytes<hugeint_t>>(seeded);
+	case PhysicalType::UINT8:
+		return HashImplementation<OP, ValueBytes<uint8_t>>(seeded);
+	case PhysicalType::UINT16:
+		return HashImplementation<OP, ValueBytes<uint16_t>>(seeded);
+	case PhysicalType::UINT32:
+		return HashImplementation<OP, ValueBytes<uint32_t>>(seeded);
+	case PhysicalType::UINT64:
+		return HashImplementation<OP, ValueBytes<uint64_t>>(seeded);
+	case PhysicalType::UINT128:
+		return HashImplementation<OP, ValueBytes<uhugeint_t>>(seeded);
+	case PhysicalType::FLOAT:
+		return HashImplementation<OP, ValueBytes<float>>(seeded);
+	case PhysicalType::DOUBLE:
+		return HashImplementation<OP, ValueBytes<double>>(seeded);
+	case PhysicalType::INTERVAL:
+		return HashImplementation<OP, ValueBytes<interval_t>>(seeded);
+	case PhysicalType::VARCHAR:
+		return HashImplementation<OP, StringBytes>(seeded);
 	default:
-		throw NotImplementedException("Unsupported type for XXH hash: " + LogicalType(type_id).ToString());
-	}
-
-	// Optimize for single-row results
-	if (row_count == 1) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		throw InternalException("hashfuncs: no hash implementation for type %s", type.ToString());
 	}
 }
 
-template <typename ResultType, HashAlgorithm Algorithm>
-inline void hashfunc_generic_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &input_vector = args.data[0];
-	auto &seed_vector = args.data[1];
-	const auto row_count = args.size();
-
-	// Early return for empty chunks
-	if (row_count == 0) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-		return;
+// Returns the type a value is hashed as, rejecting types without a stable byte representation while the query is
+// bound rather than when it runs.
+LogicalType HashInputType(const string &function_name, const LogicalType &type) {
+	if (type.IsUnknown()) {
+		throw ParameterNotResolvedException();
 	}
-
-	UnifiedVectorFormat input_vdata;
-	input_vector.ToUnifiedFormat(input_vdata);
-
-	UnifiedVectorFormat seed_vdata;
-	seed_vector.ToUnifiedFormat(seed_vdata);
-
-	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &result_validity = FlatVector::ValidityMutable(result);
-	auto results = FlatVector::GetDataMutable<ResultType>(result);
-
-	const auto type_id = input_vector.GetType().id();
-
-	switch (type_id) {
-	case LogicalTypeId::BLOB:
-	case LogicalTypeId::VARCHAR: {
-		auto inputs = UnifiedVectorFormat::GetData<string_t>(input_vdata);
-
-		auto seeds = UnifiedVectorFormat::GetData<hash_seed_type_t<Algorithm>>(seed_vdata);
-		for (idx_t i = 0; i < row_count; i++) {
-			if (!input_vdata.validity.RowIsValid(input_vdata.sel->get_index(i)) ||
-			    !seed_vdata.validity.RowIsValid(seed_vdata.sel->get_index(i))) {
-				result_validity.SetInvalid(i);
-				continue;
-			}
-			const auto &str = inputs[input_vdata.sel->get_index(i)];
-
-			const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
-
-			if constexpr (Algorithm == HashAlgorithm::XXH32) {
-				// 32-bit hash using XXH32
-				results[i] = XXH32(str.GetData(), str.GetSize(), seed_value);
-			} else if constexpr (Algorithm == HashAlgorithm::XXH64) {
-				// 64-bit hash using XXH64
-				results[i] = XXH64(str.GetData(), str.GetSize(), seed_value);
-			} else if constexpr (Algorithm == HashAlgorithm::XXH3_64) {
-				results[i] = XXH3_64bits_withSeed(str.GetData(), str.GetSize(), seed_value);
-			} else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH) {
-				results[i] = rapidhash_withSeed(str.GetData(), str.GetSize(), seed_value);
-				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_MICRO) {
-				// 	results[i] = rapidhashMicro_withSeed(str.GetData(), str.GetSize(), seed_value);
-				// } else if constexpr (Algorithm == HashAlgorithm::RAPIDHASH_NANO) {
-				// 	results[i] = rapidhashNano_withSeed(str.GetData(), str.GetSize(), seed_value);
-			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_32) {
-				// 32-bit hash using MurmurHash3
-				MurmurHash3_x86_32(str.GetData(), str.GetSize(), seed_value, &results[i]);
-			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_128) {
-				// 128-bit hash using MurmurHash3
-				MurmurHash3_x86_128(str.GetData(), str.GetSize(), seed_value, &results[i]);
-			} else if constexpr (Algorithm == HashAlgorithm::MURMURHASH3_X64_128) {
-				// 128-bit hash using MurmurHash3 x64
-				MurmurHash3_x64_128(str.GetData(), str.GetSize(), seed_value, &results[i]);
-			} else if constexpr (Algorithm == HashAlgorithm::XXH3_128) {
-				// 128-bit hash
-				XXH128_hash_t hash128 = XXH3_128bits_withSeed(str.GetData(), str.GetSize(), seed_value);
-				results[i] = uhugeint_t {hash128.low64, hash128.high64};
-			}
-		}
-		break;
-	}
-
-	case LogicalTypeId::HUGEINT:
-		hash_fixed_type_generic_with_seed<hugeint_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::UHUGEINT:
-		hash_fixed_type_generic_with_seed<uhugeint_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::USMALLINT:
-		hash_fixed_type_generic_with_seed<uint16_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::UINTEGER:
-		hash_fixed_type_generic_with_seed<uint32_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::INTEGER:
-		hash_fixed_type_generic_with_seed<int32_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::BIGINT:
-		hash_fixed_type_generic_with_seed<int64_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::UBIGINT:
-		hash_fixed_type_generic_with_seed<uint64_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::SMALLINT:
-		hash_fixed_type_generic_with_seed<int16_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
-	case LogicalTypeId::UTINYINT:
-		hash_fixed_type_generic_with_seed<uint8_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
 	case LogicalTypeId::TINYINT:
-		hash_fixed_type_generic_with_seed<int8_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+	case LogicalTypeId::UHUGEINT:
 	case LogicalTypeId::FLOAT:
-		hash_fixed_type_generic_with_seed<float, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
 	case LogicalTypeId::DOUBLE:
-		hash_fixed_type_generic_with_seed<double, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
+	case LogicalTypeId::DECIMAL:
 	case LogicalTypeId::DATE:
-		hash_fixed_type_generic_with_seed<uint32_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
 	case LogicalTypeId::TIME:
-		hash_fixed_type_generic_with_seed<uint64_t, ResultType, Algorithm>(
-		    input_vdata, row_count, input_vector, seed_vdata, seed_vector, result_validity, results);
-		break;
-
+	case LogicalTypeId::TIME_NS:
+	case LogicalTypeId::TIME_TZ:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::INTERVAL:
+	case LogicalTypeId::UUID:
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::BLOB:
+		return type;
+	// A NULL literal hashes to NULL. ENUM values hash their label, so they match a hash of the same VARCHAR.
+	case LogicalTypeId::SQLNULL:
+	case LogicalTypeId::ENUM:
+		return LogicalType::VARCHAR;
 	default:
-		throw NotImplementedException("Unsupported type for XXH hash: " + LogicalType(type_id).ToString());
-	}
-
-	// Optimize for single-row results
-	if (row_count == 1) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		throw BinderException(
+		    "%s cannot hash values of type %s. Supported types are BOOLEAN, integers, floating-point, "
+		    "DECIMAL, DATE, TIME, TIMESTAMP, INTERVAL, UUID, ENUM, VARCHAR and BLOB",
+		    function_name, type.ToString());
 	}
 }
 
-// 32-bit hash function using XXH32
-inline void hashfunc_XXH32(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uint32_t, HashAlgorithm::XXH32>(args, state, result);
-}
-
-inline void hashfunc_XXH32_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uint32_t, HashAlgorithm::XXH32>(args, state, result);
-}
-
-// 64-bit hash function using XXH64
-inline void hashfunc_XXH64(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uint64_t, HashAlgorithm::XXH64>(args, state, result);
-}
-
-inline void hashfunc_XXH64_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::XXH64>(args, state, result);
-}
-
-// Your existing 64-bit hash function using XXH3 (now uses the generic template)
-inline void hashfunc_XXH3_64(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uint64_t, HashAlgorithm::XXH3_64>(args, state, result);
-}
-
-// 64-bit hash function using XXH3 with seed
-inline void hashfunc_XXH3_64_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::XXH3_64>(args, state, result);
-}
-
-// 128-bit hash function using uhugeint_t
-inline void hashfunc_XXH3_128(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uhugeint_t, HashAlgorithm::XXH3_128>(args, state, result);
-}
-
-// 128-bit hash function using XXH3 with seed
-inline void hashfunc_XXH3_128_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uhugeint_t, HashAlgorithm::XXH3_128>(args, state, result);
+// Runs before the arguments are cast, so the input type can be checked and the implementation chosen for it.
+template <class OP>
+void HashResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	auto &bound_function = input.GetBoundFunction();
+	auto input_type = HashInputType(bound_function.GetName().GetIdentifierName(), input.GetArgumentType(0));
+	bound_function.GetArguments()[0] = input_type;
+	bound_function.SetFunctionCallback(GetHashFunction<OP>(input_type, input.GetArgumentCount() == 2));
 }
 
 // Use xxHash's canonical serialization: high64 then low64, each big-endian.
 // The numeric xxh3_128() layout is intentionally unchanged for stored-key
 // compatibility. Its historical UHUGEINT representation has swapped halves.
-static string_t CanonicalXXH128Hex(Vector &result, XXH128_hash_t hash) {
+string_t CanonicalXXH128Hex(Vector &result, XXH128_hash_t hash) {
 	XXH128_canonical_t canonical;
 	XXH128_canonicalFromHash(&canonical, hash);
 	constexpr char digits[] = "0123456789abcdef";
@@ -541,359 +312,139 @@ static string_t CanonicalXXH128Hex(Vector &result, XXH128_hash_t hash) {
 	return StringVector::AddString(result, hex, sizeof(hex));
 }
 
-inline void hashfunc_XXH3_128_hex(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &input_vector = args.data[0];
-	const auto row_count = args.size();
-
-	if (row_count == 0) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-		return;
-	}
-
-	UnifiedVectorFormat vdata;
-	input_vector.ToUnifiedFormat(vdata);
-
-	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &result_validity = FlatVector::ValidityMutable(result);
-
-	const auto type_id = input_vector.GetType().id();
-
-	switch (type_id) {
-	case LogicalTypeId::BLOB:
-	case LogicalTypeId::VARCHAR: {
-		auto inputs = UnifiedVectorFormat::GetData<string_t>(vdata);
-		for (idx_t i = 0; i < row_count; i++) {
-			if (!vdata.validity.RowIsValid(vdata.sel->get_index(i))) {
-				result_validity.SetInvalid(i);
-				continue;
-			}
-			const auto &str = inputs[vdata.sel->get_index(i)];
-			XXH128_hash_t hash128 = XXH3_128bits(str.GetData(), str.GetSize());
-			FlatVector::GetDataMutable<string_t>(result)[i] = CanonicalXXH128Hex(result, hash128);
-		}
-		break;
-	}
-	default: {
-		// For non-string types, hash the raw bytes
-		throw InvalidInputException("xxh3_128_hex only supports VARCHAR and BLOB inputs");
-	}
-	}
+void XXH3_128HexFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(
+	    args.data[0], result, args.size(),
+	    [&](const string_t &value) {
+		    return CanonicalXXH128Hex(result, XXH3_128bits(value.GetData(), value.GetSize()));
+	    },
+	    FunctionErrors::CANNOT_ERROR);
 }
 
-// 128-bit hash as canonical hex VARCHAR with seed
-inline void hashfunc_XXH3_128_hex_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &input_vector = args.data[0];
-	auto &seed_vector = args.data[1];
-	const auto row_count = args.size();
-
-	if (row_count == 0) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-		return;
-	}
-
-	UnifiedVectorFormat input_vdata, seed_vdata;
-	input_vector.ToUnifiedFormat(input_vdata);
-	seed_vector.ToUnifiedFormat(seed_vdata);
-
-	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &result_validity = FlatVector::ValidityMutable(result);
-
-	auto inputs = UnifiedVectorFormat::GetData<string_t>(input_vdata);
-	auto seeds = UnifiedVectorFormat::GetData<uint64_t>(seed_vdata);
-
-	for (idx_t i = 0; i < row_count; i++) {
-		if (!input_vdata.validity.RowIsValid(input_vdata.sel->get_index(i)) ||
-		    !seed_vdata.validity.RowIsValid(seed_vdata.sel->get_index(i))) {
-			result_validity.SetInvalid(i);
-			continue;
-		}
-		const auto &str = inputs[input_vdata.sel->get_index(i)];
-		const auto seed_value = seeds[seed_vdata.sel->get_index(i)];
-		XXH128_hash_t hash128 = XXH3_128bits_withSeed(str.GetData(), str.GetSize(), seed_value);
-		FlatVector::GetDataMutable<string_t>(result)[i] = CanonicalXXH128Hex(result, hash128);
-	}
+void XXH3_128HexFunctionWithSeed(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, uint64_t, string_t>(
+	    args.data[0], args.data[1], result, args.size(), [&](const string_t &value, uint64_t seed) {
+		    return CanonicalXXH128Hex(result, XXH3_128bits_withSeed(value.GetData(), value.GetSize(), seed));
+	    });
 }
 
-inline void hashfunc_rapidhash(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uint64_t, HashAlgorithm::RAPIDHASH>(args, state, result);
+// Declares a positional-only parameter with a real name, so duckdb_functions() reports it instead of col<N>.
+FunctionParameter Positional(const char *name, LogicalType type) {
+	return FunctionParameter(name, std::move(type), {}, FunctionParameterKind::POSITIONAL_ONLY);
 }
 
-inline void hashfunc_rapidhash_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::RAPIDHASH>(args, state, result);
-}
-
-// inline void hashfunc_rapidhashMicro(DataChunk &args, ExpressionState &state, Vector &result) {
-// 	hashfunc_generic<uint64_t, HashAlgorithm::RAPIDHASH_MICRO>(args, state, result);
-// }
-
-// inline void hashfunc_rapidhashMicro_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-// 	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::RAPIDHASH_MICRO>(args, state, result);
-// }
-
-// inline void hashfunc_rapidhashNano(DataChunk &args, ExpressionState &state, Vector &result) {
-// 	hashfunc_generic<uint64_t, HashAlgorithm::RAPIDHASH_NANO>(args, state, result);
-// }
-
-// inline void hashfunc_rapidhashNano_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-// 	hashfunc_generic_with_seed<uint64_t, HashAlgorithm::RAPIDHASH_NANO>(args, state, result);
-// }
-
-inline void hashfunc_MurmurHash3_32(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uint32_t, HashAlgorithm::MURMURHASH3_32>(args, state, result);
-}
-
-inline void hashfunc_MurmurHash3_32_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uint32_t, HashAlgorithm::MURMURHASH3_32>(args, state, result);
-}
-
-inline void hashfunc_MurmurHash3_128(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uhugeint_t, HashAlgorithm::MURMURHASH3_128>(args, state, result);
-}
-
-inline void hashfunc_MurmurHash3_128_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uhugeint_t, HashAlgorithm::MURMURHASH3_128>(args, state, result);
-}
-
-inline void hashfunc_MurmurHash3_X64_128(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic<uhugeint_t, HashAlgorithm::MURMURHASH3_X64_128>(args, state, result);
-}
-
-inline void hashfunc_MurmurHash3_X64_128_with_seed(DataChunk &args, ExpressionState &state, Vector &result) {
-	hashfunc_generic_with_seed<uhugeint_t, HashAlgorithm::MURMURHASH3_X64_128>(args, state, result);
+// Registers an algorithm as an unseeded and a seeded overload that accept any supported input type.
+template <class OP>
+void RegisterHashFunction(ExtensionLoader &loader, const string &name, const LogicalType &result_type,
+                          const LogicalType &seed_type, const string &description, const string &seeded_description) {
+	ScalarFunctionSet set {Identifier(name)};
+	ScalarFunction unseeded({Positional("value", LogicalType::ANY)}, result_type, nullptr);
+	unseeded.SetResolveTypesCallback(HashResolveTypes<OP>);
+	set.AddFunction(unseeded);
+	ScalarFunction seeded({Positional("value", LogicalType::ANY), Positional("seed", seed_type)}, result_type, nullptr);
+	seeded.SetResolveTypesCallback(HashResolveTypes<OP>);
+	set.AddFunction(seeded);
+	CreateScalarFunctionInfo info(set);
+	info.descriptions.push_back({/* parameter_types */ {LogicalType::ANY},
+	                             /* parameter_names */ {"value"},
+	                             /* description */ description,
+	                             /* examples */ {name + "('hello')"},
+	                             /* categories */ {"hash"}});
+	info.descriptions.push_back({/* parameter_types */ {LogicalType::ANY, seed_type},
+	                             /* parameter_names */ {"value", "seed"},
+	                             /* description */ seeded_description,
+	                             /* examples */ {name + "('hello', 42)"},
+	                             /* categories */ {"hash"}});
+	loader.RegisterFunction(info);
 }
 
 } // namespace
 
-// Declares a positional-only parameter with a real name, so duckdb_functions() reports it instead of col<N>.
-static FunctionParameter Positional(const char *name, LogicalType type) {
-	return FunctionParameter(name, std::move(type), {}, FunctionParameterKind::POSITIONAL_ONLY);
-}
-
 static void LoadInternal(ExtensionLoader &loader) {
+	RegisterHashFunction<XXH32Op>(loader, "xxh32", LogicalType::UINTEGER, LogicalType::UINTEGER,
+	                              "Computes a 32-bit xxHash (XXH32) non-cryptographic hash of the input",
+	                              "Computes a 32-bit xxHash (XXH32) non-cryptographic hash of the input with a seed");
 
-	// XXH32 - 32-bit xxHash
-	ScalarFunctionSet xxh32_set("xxh32");
-	xxh32_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UINTEGER, hashfunc_XXH32));
-	xxh32_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UINTEGER)},
-		               LogicalType::UINTEGER, hashfunc_XXH32_with_seed));
-	xxh32_set.SetFallible();
-	CreateScalarFunctionInfo xxh32_info(xxh32_set);
-	xxh32_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY},
-	     /* parameter_names */ {"value"},
-	     /* description */ "Computes a 32-bit xxHash (XXH32) non-cryptographic hash of the input",
-	     /* examples */ {"xxh32('hello')"},
-	     /* categories */ {"hash"}});
-	xxh32_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UINTEGER},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */ "Computes a 32-bit xxHash (XXH32) non-cryptographic hash of the input with a seed",
-	     /* examples */ {"xxh32('hello', 42)"},
-	     /* categories */ {"hash"}});
-	loader.RegisterFunction(xxh32_info);
+	RegisterHashFunction<XXH64Op>(loader, "xxh64", LogicalType::UBIGINT, LogicalType::UBIGINT,
+	                              "Computes a 64-bit xxHash (XXH64) non-cryptographic hash of the input",
+	                              "Computes a 64-bit xxHash (XXH64) non-cryptographic hash of the input with a seed");
 
-	// XXH64 - 64-bit xxHash
-	ScalarFunctionSet xxh64_set("xxh64");
-	xxh64_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UBIGINT, hashfunc_XXH64));
-	xxh64_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UBIGINT)},
-		               LogicalType::UBIGINT, hashfunc_XXH64_with_seed));
-	xxh64_set.SetFallible();
-	CreateScalarFunctionInfo xxh64_info(xxh64_set);
-	xxh64_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY},
-	     /* parameter_names */ {"value"},
-	     /* description */ "Computes a 64-bit xxHash (XXH64) non-cryptographic hash of the input",
-	     /* examples */ {"xxh64('hello')"},
-	     /* categories */ {"hash"}});
-	xxh64_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UBIGINT},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */ "Computes a 64-bit xxHash (XXH64) non-cryptographic hash of the input with a seed",
-	     /* examples */ {"xxh64('hello', 42)"},
-	     /* categories */ {"hash"}});
-	loader.RegisterFunction(xxh64_info);
+	RegisterHashFunction<XXH3_64Op>(
+	    loader, "xxh3_64", LogicalType::UBIGINT, LogicalType::UBIGINT,
+	    "Computes a 64-bit xxHash3 (XXH3_64) non-cryptographic hash of the input. Faster than XXH64 for short inputs",
+	    "Computes a 64-bit xxHash3 (XXH3_64) non-cryptographic hash of the input with a seed");
 
-	// XXH3_64 - 64-bit xxHash3 (faster than XXH64 for short inputs)
-	ScalarFunctionSet xxh3_64_set("xxh3_64");
-	xxh3_64_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UBIGINT, hashfunc_XXH3_64));
-	xxh3_64_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UBIGINT)},
-		               LogicalType::UBIGINT, hashfunc_XXH3_64_with_seed));
-	xxh3_64_set.SetFallible();
-	CreateScalarFunctionInfo xxh3_64_info(xxh3_64_set);
-	xxh3_64_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY},
-	     /* parameter_names */ {"value"},
-	     /* description */
-	     "Computes a 64-bit xxHash3 (XXH3_64) non-cryptographic hash of the input. Faster than XXH64 for short inputs",
-	     /* examples */ {"xxh3_64('hello')"},
-	     /* categories */ {"hash"}});
-	xxh3_64_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UBIGINT},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */ "Computes a 64-bit xxHash3 (XXH3_64) non-cryptographic hash of the input with a seed",
-	     /* examples */ {"xxh3_64('hello', 42)"},
-	     /* categories */ {"hash"}});
-	loader.RegisterFunction(xxh3_64_info);
-
-	// XXH3_128 - 128-bit xxHash3
-	ScalarFunctionSet xxh3_128_set("xxh3_128");
-	xxh3_128_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UHUGEINT, hashfunc_XXH3_128));
-	xxh3_128_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UBIGINT)},
-		               LogicalType::UHUGEINT, hashfunc_XXH3_128_with_seed));
-	xxh3_128_set.SetFallible();
-	CreateScalarFunctionInfo xxh3_128_info(xxh3_128_set);
-	xxh3_128_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY},
-	     /* parameter_names */ {"value"},
-	     /* description */ "Computes a 128-bit xxHash3 (XXH3_128) non-cryptographic hash of the input",
-	     /* examples */ {"xxh3_128('hello')"},
-	     /* categories */ {"hash"}});
-	xxh3_128_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UBIGINT},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */ "Computes a 128-bit xxHash3 (XXH3_128) non-cryptographic hash of the input with a seed",
-	     /* examples */ {"xxh3_128('hello', 42)"},
-	     /* categories */ {"hash"}});
-	loader.RegisterFunction(xxh3_128_info);
+	RegisterHashFunction<XXH3_128Op>(
+	    loader, "xxh3_128", LogicalType::UHUGEINT, LogicalType::UBIGINT,
+	    "Computes a 128-bit xxHash3 (XXH3_128) non-cryptographic hash of the input",
+	    "Computes a 128-bit xxHash3 (XXH3_128) non-cryptographic hash of the input with a seed");
 
 	// XXH3_128_hex - 128-bit xxHash3 as canonical hex string
+	const vector<LogicalType> hex_input_types {LogicalType::VARCHAR, LogicalType::BLOB};
 	ScalarFunctionSet xxh3_128_hex_set("xxh3_128_hex");
-	xxh3_128_hex_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::VARCHAR)}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex));
-	xxh3_128_hex_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::BLOB)}, LogicalType::VARCHAR, hashfunc_XXH3_128_hex));
-	xxh3_128_hex_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::VARCHAR), Positional("seed", LogicalType::UBIGINT)},
-		               LogicalType::VARCHAR, hashfunc_XXH3_128_hex_with_seed));
-	xxh3_128_hex_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::BLOB), Positional("seed", LogicalType::UBIGINT)},
-		               LogicalType::VARCHAR, hashfunc_XXH3_128_hex_with_seed));
-	xxh3_128_hex_set.SetFallible();
+	for (auto &input_type : hex_input_types) {
+		xxh3_128_hex_set.AddFunction(
+		    ScalarFunction({Positional("value", input_type)}, LogicalType::VARCHAR, XXH3_128HexFunction));
+		xxh3_128_hex_set.AddFunction(
+		    ScalarFunction({Positional("value", input_type), Positional("seed", LogicalType::UBIGINT)},
+		                   LogicalType::VARCHAR, XXH3_128HexFunctionWithSeed));
+	}
 	CreateScalarFunctionInfo xxh3_128_hex_info(xxh3_128_hex_set);
-	xxh3_128_hex_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::VARCHAR},
-	     /* parameter_names */ {"value"},
-	     /* description */
-	     "Computes a 128-bit xxHash3 hash and returns it as a 32-character lowercase hex string "
-	     "in canonical byte order (high64 || low64), matching Python xxhash.xxh3_128().hexdigest()",
-	     /* examples */ {"xxh3_128_hex('hello')"},
-	     /* categories */ {"hash"}});
-	xxh3_128_hex_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::VARCHAR, LogicalType::UBIGINT},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */
-	     "Computes a 128-bit xxHash3 hash with a seed and returns it as a 32-character lowercase "
-	     "hex string in canonical byte order",
-	     /* examples */ {"xxh3_128_hex('hello', 42)"},
-	     /* categories */ {"hash"}});
+	for (auto &input_type : hex_input_types) {
+		const string example_value = input_type == LogicalType::BLOB ? "'hello'::BLOB" : "'hello'";
+		xxh3_128_hex_info.descriptions.push_back(
+		    {/* parameter_types */ {input_type},
+		     /* parameter_names */ {"value"},
+		     /* description */
+		     "Computes a 128-bit xxHash3 hash and returns it as a 32-character lowercase hex string "
+		     "in canonical byte order (high64 || low64), matching Python xxhash.xxh3_128().hexdigest()",
+		     /* examples */ {"xxh3_128_hex(" + example_value + ")"},
+		     /* categories */ {"hash"}});
+		xxh3_128_hex_info.descriptions.push_back(
+		    {/* parameter_types */ {input_type, LogicalType::UBIGINT},
+		     /* parameter_names */ {"value", "seed"},
+		     /* description */
+		     "Computes a 128-bit xxHash3 hash with a seed and returns it as a 32-character lowercase "
+		     "hex string in canonical byte order",
+		     /* examples */ {"xxh3_128_hex(" + example_value + ", 42)"},
+		     /* categories */ {"hash"}});
+	}
 	loader.RegisterFunction(xxh3_128_hex_info);
 
-	// RapidHash - fast 64-bit hash
-	ScalarFunctionSet rapidhash_set("rapidhash");
-	rapidhash_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UBIGINT, hashfunc_rapidhash));
-	rapidhash_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UBIGINT)},
-		               LogicalType::UBIGINT, hashfunc_rapidhash_with_seed));
-	rapidhash_set.SetFallible();
-	CreateScalarFunctionInfo rapidhash_info(rapidhash_set);
-	rapidhash_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY},
-	     /* parameter_names */ {"value"},
-	     /* description */
-	     "Computes a 64-bit RapidHash non-cryptographic hash of the input. Very fast for all input sizes",
-	     /* examples */ {"rapidhash('hello')"},
-	     /* categories */ {"hash"}});
-	rapidhash_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UBIGINT},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */ "Computes a 64-bit RapidHash non-cryptographic hash of the input with a seed",
-	     /* examples */ {"rapidhash('hello', 42)"},
-	     /* categories */ {"hash"}});
-	loader.RegisterFunction(rapidhash_info);
+	RegisterHashFunction<RapidhashOp>(
+	    loader, "rapidhash", LogicalType::UBIGINT, LogicalType::UBIGINT,
+	    "Computes a 64-bit RapidHash non-cryptographic hash of the input. Very fast for all input sizes",
+	    "Computes a 64-bit RapidHash non-cryptographic hash of the input with a seed");
 
-	// MurmurHash3 32-bit
-	ScalarFunctionSet murmurhash3_32_set("murmurhash3_32");
-	murmurhash3_32_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UINTEGER, hashfunc_MurmurHash3_32));
-	murmurhash3_32_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UINTEGER)},
-		               LogicalType::UINTEGER, hashfunc_MurmurHash3_32_with_seed));
-	murmurhash3_32_set.SetFallible();
-	CreateScalarFunctionInfo murmurhash3_32_info(murmurhash3_32_set);
-	murmurhash3_32_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY},
-	     /* parameter_names */ {"value"},
-	     /* description */ "Computes a 32-bit MurmurHash3 non-cryptographic hash of the input",
-	     /* examples */ {"murmurhash3_32('hello')"},
-	     /* categories */ {"hash"}});
-	murmurhash3_32_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UINTEGER},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */ "Computes a 32-bit MurmurHash3 non-cryptographic hash of the input with a seed",
-	     /* examples */ {"murmurhash3_32('hello', 42)"},
-	     /* categories */ {"hash"}});
-	loader.RegisterFunction(murmurhash3_32_info);
+	RegisterHashFunction<RapidhashMicroOp>(
+	    loader, "rapidhash_micro", LogicalType::UBIGINT, LogicalType::UBIGINT,
+	    "Computes a 64-bit RapidHash Micro non-cryptographic hash of the input. Smaller code than RapidHash, with "
+	    "identical results for inputs up to 80 bytes",
+	    "Computes a 64-bit RapidHash Micro non-cryptographic hash of the input with a seed");
 
-	// MurmurHash3 128-bit (x86 variant)
-	ScalarFunctionSet murmurhash3_128_set("murmurhash3_128");
-	murmurhash3_128_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_128));
-	murmurhash3_128_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UINTEGER)},
-		               LogicalType::UHUGEINT, hashfunc_MurmurHash3_128_with_seed));
-	murmurhash3_128_set.SetFallible();
-	CreateScalarFunctionInfo murmurhash3_128_info(murmurhash3_128_set);
-	murmurhash3_128_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY},
-	     /* parameter_names */ {"value"},
-	     /* description */ "Computes a 128-bit MurmurHash3 (x86 variant) non-cryptographic hash of the input",
-	     /* examples */ {"murmurhash3_128('hello')"},
-	     /* categories */ {"hash"}});
-	murmurhash3_128_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UINTEGER},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */
-	     "Computes a 128-bit MurmurHash3 (x86 variant) non-cryptographic hash of the input with a seed",
-	     /* examples */ {"murmurhash3_128('hello', 42)"},
-	     /* categories */ {"hash"}});
-	loader.RegisterFunction(murmurhash3_128_info);
+	RegisterHashFunction<RapidhashNanoOp>(
+	    loader, "rapidhash_nano", LogicalType::UBIGINT, LogicalType::UBIGINT,
+	    "Computes a 64-bit RapidHash Nano non-cryptographic hash of the input. Smallest RapidHash variant, with "
+	    "identical results for inputs up to 48 bytes",
+	    "Computes a 64-bit RapidHash Nano non-cryptographic hash of the input with a seed");
 
-	// MurmurHash3 128-bit (x64 variant - optimized for 64-bit platforms)
-	ScalarFunctionSet murmurhash3_x64_128_set("murmurhash3_x64_128");
-	murmurhash3_x64_128_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY)}, LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128));
-	murmurhash3_x64_128_set.AddFunction(
-	    ScalarFunction({Positional("value", LogicalType::ANY), Positional("seed", LogicalType::UINTEGER)},
-		               LogicalType::UHUGEINT, hashfunc_MurmurHash3_X64_128_with_seed));
-	murmurhash3_x64_128_set.SetFallible();
-	CreateScalarFunctionInfo murmurhash3_x64_128_info(murmurhash3_x64_128_set);
-	murmurhash3_x64_128_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY},
-	     /* parameter_names */ {"value"},
-	     /* description */
-	     "Computes a 128-bit MurmurHash3 (x64 variant) non-cryptographic hash of the input. Optimized for 64-bit "
-	     "platforms",
-	     /* examples */ {"murmurhash3_x64_128('hello')"},
-	     /* categories */ {"hash"}});
-	murmurhash3_x64_128_info.descriptions.push_back(
-	    {/* parameter_types */ {LogicalType::ANY, LogicalType::UINTEGER},
-	     /* parameter_names */ {"value", "seed"},
-	     /* description */
-	     "Computes a 128-bit MurmurHash3 (x64 variant) non-cryptographic hash of the input with a seed",
-	     /* examples */ {"murmurhash3_x64_128('hello', 42)"},
-	     /* categories */ {"hash"}});
-	loader.RegisterFunction(murmurhash3_x64_128_info);
+	RegisterHashFunction<MurmurHash3_32Op>(
+	    loader, "murmurhash3_32", LogicalType::UINTEGER, LogicalType::UINTEGER,
+	    "Computes a 32-bit MurmurHash3 non-cryptographic hash of the input",
+	    "Computes a 32-bit MurmurHash3 non-cryptographic hash of the input with a seed");
 
-	QueryFarmSendTelemetry(loader, "hashfuncs", "2026102101");
+	RegisterHashFunction<MurmurHash3_128Op>(
+	    loader, "murmurhash3_128", LogicalType::UHUGEINT, LogicalType::UINTEGER,
+	    "Computes a 128-bit MurmurHash3 (x86 variant) non-cryptographic hash of the input",
+	    "Computes a 128-bit MurmurHash3 (x86 variant) non-cryptographic hash of the input with a seed");
+
+	RegisterHashFunction<MurmurHash3_X64_128Op>(
+	    loader, "murmurhash3_x64_128", LogicalType::UHUGEINT, LogicalType::UINTEGER,
+	    "Computes a 128-bit MurmurHash3 (x64 variant) non-cryptographic hash of the input. Optimized for 64-bit "
+	    "platforms",
+	    "Computes a 128-bit MurmurHash3 (x64 variant) non-cryptographic hash of the input with a seed");
+
+	QueryFarmSendTelemetry(loader, "hashfuncs", HASHFUNCS_VERSION);
 }
 
 void HashfuncsExtension::Load(ExtensionLoader &loader) {
@@ -904,7 +455,7 @@ std::string HashfuncsExtension::Name() {
 }
 
 std::string HashfuncsExtension::Version() const {
-	return "2026102101";
+	return HASHFUNCS_VERSION;
 }
 
 } // namespace duckdb

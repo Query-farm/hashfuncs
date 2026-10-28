@@ -6,7 +6,7 @@ require hashfuncs
 
 query II
 SELECT DISTINCT function_name, parameters FROM duckdb_functions()
-WHERE function_name IN ('murmurhash3_128', 'murmurhash3_32', 'murmurhash3_x64_128', 'rapidhash', 'xxh32', 'xxh3_128', 'xxh3_128_hex', 'xxh3_64', 'xxh64')
+WHERE function_name IN ('murmurhash3_128', 'murmurhash3_32', 'murmurhash3_x64_128', 'rapidhash', 'rapidhash_micro', 'rapidhash_nano', 'xxh32', 'xxh3_128', 'xxh3_128_hex', 'xxh3_64', 'xxh64')
 ORDER BY ALL;
 ----
 murmurhash3_128	[value]
@@ -17,6 +17,10 @@ murmurhash3_x64_128	[value]
 murmurhash3_x64_128	[value, seed]
 rapidhash	[value]
 rapidhash	[value, seed]
+rapidhash_micro	[value]
+rapidhash_micro	[value, seed]
+rapidhash_nano	[value]
+rapidhash_nano	[value, seed]
 xxh32	[value]
 xxh32	[value, seed]
 xxh3_128	[value]
