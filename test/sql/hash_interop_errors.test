@@ -1,0 +1,68 @@
+# name: test/sql/hash_interop_errors.test
+# description: NULL handling, argument checks and vector shapes of the functions that match other systems
+# group: [sql]
+
+require hashfuncs
+
+# Spark skips NULLs, so all-NULL arguments give the seed, 42.
+query II
+SELECT spark_hash(NULL::INTEGER, NULL::VARCHAR), spark_xxhash64(NULL);
+----
+42	42
+
+query II
+SELECT spark_hash(NULL::VARCHAR, 'a') = spark_hash('a'), spark_hash([NULL::INTEGER, 1]) = spark_hash([1]);
+----
+true	true
+
+# Types with no Spark equivalent are rejected when the query is bound, including inside nested values.
+statement error
+SELECT spark_hash(x) FROM (SELECT 1::UINTEGER AS x) WHERE false;
+----
+spark_hash cannot hash values of type UINTEGER, which has no Spark equivalent
+
+statement error
+SELECT spark_xxhash64(MAP {'a': 1});
+----
+spark_xxhash64 cannot hash values of type MAP(VARCHAR, INTEGER)
+
+statement error
+SELECT spark_hash('a', [{'u': '0123abcd-4567-89ef-0123-456789abcdef'::UUID}]);
+----
+spark_hash cannot hash values of type UUID
+
+# Kafka does not hash NULL keys, and needs at least one partition.
+query III
+SELECT kafka_partition(NULL::VARCHAR, 3), kafka_partition('k', NULL), kafka_murmur2(NULL::BLOB);
+----
+NULL	NULL	NULL
+
+statement error
+SELECT kafka_partition('k', 0);
+----
+the number of partitions must be between 1 and 2147483647, got 0
+
+statement error
+SELECT kafka_partition('k', 2147483648);
+----
+the number of partitions must be between 1 and 2147483647, got 2147483648
+
+query II
+SELECT farm_fingerprint(NULL::VARCHAR), clickhouse_cityhash64(NULL::BLOB);
+----
+NULL	NULL
+
+# Column values hash the same as constants, through selections and NULLs.
+statement ok
+CREATE TABLE keys AS SELECT i AS id, CASE WHEN i % 9 = 0 THEN NULL ELSE 'key-' || i END AS k,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE i % 50 + 1 END AS n FROM range(3000) t(i);
+
+query I
+SELECT count(*) FROM keys
+WHERE id % 3 = 2
+  AND (spark_hash(k, id) IS DISTINCT FROM spark_hash('key-' || id, id) AND k IS NOT NULL
+       OR kafka_partition(k, n) IS DISTINCT FROM (CASE WHEN k IS NULL OR n IS NULL THEN NULL
+                                                    ELSE (kafka_murmur2(k) & 2147483647) % n END)
+       OR farm_fingerprint(k) IS DISTINCT FROM (CASE WHEN k IS NULL THEN NULL ELSE farm_fingerprint('key-' || id) END));
+----
+0

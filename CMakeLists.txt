@@ -18,7 +18,18 @@ include_directories(src/include
 ${RAPIDHASH_INCLUDE_DIRS})
 
 set(EXTENSION_SOURCES src/hashfuncs_extension.cpp
+src/hash_interop.cpp
+src/vendored_hashes.cpp
+src/crc32c.cpp
+src/siphash_1_3.c
+src/siphash_2_4.c
+src/third_party/farmhash/farmhash.cc
+src/third_party/cityhash102/city.cc
 src/query_farm_telemetry.cpp)
+
+# CityHash v1.0.2 includes its own headers with angle brackets; keep its config.h off the global include path.
+set_source_files_properties(src/third_party/cityhash102/city.cc PROPERTIES INCLUDE_DIRECTORIES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/cityhash102)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

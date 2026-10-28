@@ -11,10 +11,24 @@
 #include "xxhash.h"
 #include "rapidhash.h"
 #include "MurmurHash3.h"
+#include "third_party/wyhash/wyhash.h"
+#include "third_party/komihash/komihash.h"
+#include "hash_interop.hpp"
+#include "vendored_hashes.hpp"
 #include "query_farm_telemetry.hpp"
 namespace duckdb {
 
-static constexpr const char *HASHFUNCS_VERSION = "2026102701";
+static constexpr const char *HASHFUNCS_VERSION = "2026102702";
+
+// The per-row hash wrappers must inline into HashFunction's loop: when the compiler declined to inline RapidHash's
+// wrapper, short strings hashed 16% slower.
+#if defined(_MSC_VER)
+#define HASHFUNCS_ALWAYS_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define HASHFUNCS_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define HASHFUNCS_ALWAYS_INLINE inline
+#endif
 
 namespace {
 
@@ -23,7 +37,7 @@ namespace {
 struct XXH32Op {
 	using result_t = uint32_t;
 	using seed_t = uint32_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		return XXH32(data, size, seed);
 	}
 };
@@ -31,7 +45,7 @@ struct XXH32Op {
 struct XXH64Op {
 	using result_t = uint64_t;
 	using seed_t = uint64_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		return XXH64(data, size, seed);
 	}
 };
@@ -39,7 +53,7 @@ struct XXH64Op {
 struct XXH3_64Op {
 	using result_t = uint64_t;
 	using seed_t = uint64_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		return XXH3_64bits_withSeed(data, size, seed);
 	}
 };
@@ -47,7 +61,7 @@ struct XXH3_64Op {
 struct XXH3_128Op {
 	using result_t = uhugeint_t;
 	using seed_t = uint64_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		auto hash = XXH3_128bits_withSeed(data, size, seed);
 		// The historical xxh3_128() layout is kept for stored-key compatibility: uhugeint_t(upper, lower) puts low64
 		// in the upper half. xxh3_128_hex() returns xxHash's canonical byte order instead.
@@ -58,7 +72,7 @@ struct XXH3_128Op {
 struct RapidhashOp {
 	using result_t = uint64_t;
 	using seed_t = uint64_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		return rapidhash_withSeed(data, size, seed);
 	}
 };
@@ -66,7 +80,7 @@ struct RapidhashOp {
 struct RapidhashMicroOp {
 	using result_t = uint64_t;
 	using seed_t = uint64_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		return rapidhashMicro_withSeed(data, size, seed);
 	}
 };
@@ -74,7 +88,7 @@ struct RapidhashMicroOp {
 struct RapidhashNanoOp {
 	using result_t = uint64_t;
 	using seed_t = uint64_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		return rapidhashNano_withSeed(data, size, seed);
 	}
 };
@@ -82,7 +96,7 @@ struct RapidhashNanoOp {
 struct MurmurHash3_32Op {
 	using result_t = uint32_t;
 	using seed_t = uint32_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		result_t result;
 		MurmurHash3_x86_32(data, static_cast<int>(size), seed, &result);
 		return result;
@@ -94,7 +108,7 @@ struct MurmurHash3_32Op {
 struct MurmurHash3_128Op {
 	using result_t = uhugeint_t;
 	using seed_t = uint32_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		result_t result;
 		MurmurHash3_x86_128(data, static_cast<int>(size), seed, &result);
 		return result;
@@ -104,49 +118,272 @@ struct MurmurHash3_128Op {
 struct MurmurHash3_X64_128Op {
 	using result_t = uhugeint_t;
 	using seed_t = uint32_t;
-	static result_t Hash(const void *data, idx_t size, seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
 		result_t result;
 		MurmurHash3_x64_128(data, static_cast<int>(size), seed, &result);
 		return result;
 	}
 };
 
+struct WyhashOp {
+	using result_t = uint64_t;
+	using seed_t = uint64_t;
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		return wyhash(data, size, seed, _wyp);
+	}
+};
+
+struct KomihashOp {
+	using result_t = uint64_t;
+	using seed_t = uint64_t;
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t seed) {
+		return komihash(data, size, seed);
+	}
+};
+
+// SipHash takes a 128-bit key: the UHUGEINT's 16 little-endian bytes, lower half first. Without a key it uses
+// all-zero key bytes.
+template <uint64_t (*SIPHASH)(const void *, size_t, const uint8_t *)>
+struct SipHashOp {
+	using result_t = uint64_t;
+	using seed_t = uhugeint_t;
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t key) {
+		uint8_t key_bytes[16];
+		for (idx_t i = 0; i < 8; i++) {
+			key_bytes[i] = static_cast<uint8_t>(key.lower >> (8 * i));
+			key_bytes[8 + i] = static_cast<uint8_t>(key.upper >> (8 * i));
+		}
+		return SIPHASH(data, size, key_bytes);
+	}
+};
+
+using SipHash13Op = SipHashOp<hashfuncs::SipHash13>;
+using SipHash24Op = SipHashOp<hashfuncs::SipHash24>;
+
+// The seed of CRC-32C is the CRC of data hashed before this value, so checksums can be extended.
+struct Crc32cOp {
+	using result_t = uint32_t;
+	using seed_t = uint32_t;
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t previous_crc) {
+		return hashfuncs::Crc32cExtend(previous_crc, data, size);
+	}
+};
+
+// FNV-1a has no seed; it is registered without a seeded overload.
+template <class T, T OFFSET_BASIS, T PRIME>
+struct Fnv1aOp {
+	using result_t = T;
+	using seed_t = T;
+	HASHFUNCS_ALWAYS_INLINE static result_t Hash(const void *data, idx_t size, seed_t) {
+		auto bytes = static_cast<const uint8_t *>(data);
+		T hash = OFFSET_BASIS;
+		for (idx_t i = 0; i < size; i++) {
+			hash = (hash ^ bytes[i]) * PRIME;
+		}
+		return hash;
+	}
+};
+
+using Fnv1a32Op = Fnv1aOp<uint32_t, 0x811c9dc5u, 0x01000193u>;
+using Fnv1a64Op = Fnv1aOp<uint64_t, 0xcbf29ce484222325ull, 0x100000001b3ull>;
+
+// A reader loads an argument vector and hashes its rows: Lookup() finds a row's position and validity, and Hash()
+// hashes the value there.
+
 // Fixed-width values hash their in-memory bytes, so the hash depends on the value's width: 42::INTEGER and
 // 42::BIGINT hash differently.
 template <class T>
-struct ValueBytes {
-	using input_t = T;
+struct ValueReader {
+	UnifiedVectorFormat format;
+	const T *data = nullptr;
+
+	void Initialize(Vector &input, idx_t count) {
+		input.ToUnifiedFormat(count, format);
+		data = UnifiedVectorFormat::GetData<T>(format);
+	}
+	HASHFUNCS_ALWAYS_INLINE bool Lookup(idx_t row, idx_t &idx) const {
+		idx = format.sel->get_index(row);
+		return format.validity.RowIsValid(idx);
+	}
 	template <class OP>
-	static typename OP::result_t Hash(const T &value, typename OP::seed_t seed) {
-		return OP::Hash(&value, sizeof(T), seed);
+	HASHFUNCS_ALWAYS_INLINE typename OP::result_t Hash(idx_t row, idx_t idx, typename OP::seed_t seed) {
+		return OP::Hash(&data[idx], sizeof(T), seed);
 	}
 };
 
 // VARCHAR and BLOB values hash their contents.
-struct StringBytes {
-	using input_t = string_t;
+struct StringReader : ValueReader<string_t> {
 	template <class OP>
-	static typename OP::result_t Hash(const string_t &value, typename OP::seed_t seed) {
-		return OP::Hash(value.GetData(), value.GetSize(), seed);
+	HASHFUNCS_ALWAYS_INLINE typename OP::result_t Hash(idx_t row, idx_t idx, typename OP::seed_t seed) {
+		return OP::Hash(data[idx].GetData(), data[idx].GetSize(), seed);
 	}
 };
 
 // UUIDs hash their 16 RFC 4122 bytes, matching a hash of the UUID's binary form in other systems.
-struct UUIDBytes {
-	using input_t = hugeint_t;
+struct UUIDReader : ValueReader<hugeint_t> {
 	template <class OP>
-	static typename OP::result_t Hash(const hugeint_t &value, typename OP::seed_t seed) {
+	HASHFUNCS_ALWAYS_INLINE typename OP::result_t Hash(idx_t row, idx_t idx, typename OP::seed_t seed) {
 		data_t bytes[16];
-		UUID::ToBlob(value, bytes);
+		UUID::ToBlob(data[idx], bytes);
 		return OP::Hash(bytes, sizeof(bytes), seed);
+	}
+};
+
+// Nested values (STRUCT, LIST, MAP, ARRAY) are encoded into one byte string and hashed once. The encoding is
+// unambiguous for a given type, so ('a|', 'b') and ('a', '|b') hash differently:
+//   field           0x00 if NULL, otherwise 0x01 followed by the value
+//   VARCHAR, BLOB   length as a little-endian uint64, then the bytes
+//   LIST, ARRAY     element count as a little-endian uint64, then each element as a field
+//   MAP             a LIST of (key, value) STRUCTs
+//   STRUCT          each child as a field, in order; field names are not encoded
+//   UUID            its 16 RFC 4122 bytes
+//   anything else   the same bytes it hashes as on its own
+// ARRAY and LIST values with the same elements therefore hash the same.
+class NestedEncoder {
+public:
+	void Clear() {
+		buffer.clear();
+	}
+	const string &Bytes() const {
+		return buffer;
+	}
+
+	void AppendField(const RecursiveUnifiedVectorFormat &format, idx_t entry) {
+		const auto idx = format.unified.sel->get_index(entry);
+		if (!format.unified.validity.RowIsValid(idx)) {
+			buffer.push_back('\0');
+			return;
+		}
+		buffer.push_back('\1');
+		AppendValue(format, entry);
+	}
+
+	void AppendValue(const RecursiveUnifiedVectorFormat &format, idx_t entry) {
+		const auto idx = format.unified.sel->get_index(entry);
+		const auto &type = format.logical_type;
+		if (type.id() == LogicalTypeId::UUID) {
+			data_t bytes[16];
+			UUID::ToBlob(UnifiedVectorFormat::GetData<hugeint_t>(format.unified)[idx], bytes);
+			AppendBytes(bytes, sizeof(bytes));
+			return;
+		}
+		switch (type.InternalType()) {
+		case PhysicalType::STRUCT:
+			for (auto &child : format.children) {
+				AppendField(child, entry);
+			}
+			break;
+		case PhysicalType::LIST: {
+			const auto &list = UnifiedVectorFormat::GetData<list_entry_t>(format.unified)[idx];
+			AppendLength(list.length);
+			for (idx_t i = 0; i < list.length; i++) {
+				AppendField(format.children[0], list.offset + i);
+			}
+			break;
+		}
+		case PhysicalType::ARRAY: {
+			const auto array_size = ArrayType::GetSize(type);
+			AppendLength(array_size);
+			for (idx_t i = 0; i < array_size; i++) {
+				AppendField(format.children[0], idx * array_size + i);
+			}
+			break;
+		}
+		case PhysicalType::VARCHAR: {
+			const auto &value = UnifiedVectorFormat::GetData<string_t>(format.unified)[idx];
+			AppendLength(value.GetSize());
+			AppendBytes(value.GetData(), value.GetSize());
+			break;
+		}
+		case PhysicalType::BOOL:
+			AppendFixed<bool>(format.unified, idx);
+			break;
+		case PhysicalType::INT8:
+			AppendFixed<int8_t>(format.unified, idx);
+			break;
+		case PhysicalType::INT16:
+			AppendFixed<int16_t>(format.unified, idx);
+			break;
+		case PhysicalType::INT32:
+			AppendFixed<int32_t>(format.unified, idx);
+			break;
+		case PhysicalType::INT64:
+			AppendFixed<int64_t>(format.unified, idx);
+			break;
+		case PhysicalType::INT128:
+			AppendFixed<hugeint_t>(format.unified, idx);
+			break;
+		case PhysicalType::UINT8:
+			AppendFixed<uint8_t>(format.unified, idx);
+			break;
+		case PhysicalType::UINT16:
+			AppendFixed<uint16_t>(format.unified, idx);
+			break;
+		case PhysicalType::UINT32:
+			AppendFixed<uint32_t>(format.unified, idx);
+			break;
+		case PhysicalType::UINT64:
+			AppendFixed<uint64_t>(format.unified, idx);
+			break;
+		case PhysicalType::UINT128:
+			AppendFixed<uhugeint_t>(format.unified, idx);
+			break;
+		case PhysicalType::FLOAT:
+			AppendFixed<float>(format.unified, idx);
+			break;
+		case PhysicalType::DOUBLE:
+			AppendFixed<double>(format.unified, idx);
+			break;
+		case PhysicalType::INTERVAL:
+			AppendFixed<interval_t>(format.unified, idx);
+			break;
+		default:
+			throw InternalException("hashfuncs: no nested encoding for type %s", type.ToString());
+		}
+	}
+
+private:
+	string buffer;
+
+	void AppendBytes(const void *data, idx_t size) {
+		buffer.append(const_char_ptr_cast(data), size);
+	}
+	void AppendLength(uint64_t length) {
+		char bytes[8];
+		for (idx_t i = 0; i < 8; i++) {
+			bytes[i] = static_cast<char>(length >> (8 * i));
+		}
+		buffer.append(bytes, sizeof(bytes));
+	}
+	template <class T>
+	void AppendFixed(const UnifiedVectorFormat &format, idx_t idx) {
+		AppendBytes(&UnifiedVectorFormat::GetData<T>(format)[idx], sizeof(T));
+	}
+};
+
+struct NestedReader {
+	RecursiveUnifiedVectorFormat format;
+	NestedEncoder encoder;
+
+	void Initialize(Vector &input, idx_t count) {
+		Vector::RecursiveToUnifiedFormat(input, count, format);
+	}
+	HASHFUNCS_ALWAYS_INLINE bool Lookup(idx_t row, idx_t &idx) const {
+		idx = format.unified.sel->get_index(row);
+		return format.unified.validity.RowIsValid(idx);
+	}
+	template <class OP>
+	HASHFUNCS_ALWAYS_INLINE typename OP::result_t Hash(idx_t row, idx_t idx, typename OP::seed_t seed) {
+		encoder.Clear();
+		encoder.AppendValue(format, row);
+		return OP::Hash(encoder.Bytes().data(), encoder.Bytes().size(), seed);
 	}
 };
 
 // Hashes each row straight from the input vector's memory. DuckDB's Unary/BinaryExecutor pass every value by copy,
 // and hashing the bytes of a just-copied short string or integer measured about 20% slower.
-template <class OP, class KEY, bool SEEDED>
+template <class OP, class READER, bool SEEDED>
 void HashFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	using input_t = typename KEY::input_t;
 	using seed_t = typename OP::seed_t;
 	using result_t = typename OP::result_t;
 
@@ -159,17 +396,16 @@ void HashFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.SetVectorType(all_constant ? VectorType::CONSTANT_VECTOR : VectorType::FLAT_VECTOR);
 	auto results = all_constant ? ConstantVector::GetData<result_t>(result) : FlatVector::GetData<result_t>(result);
 
-	UnifiedVectorFormat input_data;
-	args.data[0].ToUnifiedFormat(count, input_data);
-	auto inputs = UnifiedVectorFormat::GetData<input_t>(input_data);
+	READER reader;
+	reader.Initialize(args.data[0], count);
 	UnifiedVectorFormat seed_data;
 	if constexpr (SEEDED) {
 		args.data[1].ToUnifiedFormat(count, seed_data);
 	}
 
 	for (idx_t i = 0; i < count; i++) {
-		const auto input_idx = input_data.sel->get_index(i);
-		bool valid = input_data.validity.RowIsValid(input_idx);
+		idx_t input_idx;
+		bool valid = reader.Lookup(i, input_idx);
 		seed_t seed = 0;
 		if constexpr (SEEDED) {
 			const auto seed_idx = seed_data.sel->get_index(i);
@@ -186,62 +422,67 @@ void HashFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 			}
 			continue;
 		}
-		results[i] = KEY::template Hash<OP>(inputs[input_idx], seed);
+		results[i] = reader.template Hash<OP>(i, input_idx, seed);
 	}
 }
 
-template <class OP, class KEY>
+template <class OP, class READER>
 scalar_function_t HashImplementation(bool seeded) {
 	if (seeded) {
-		return HashFunction<OP, KEY, true>;
+		return HashFunction<OP, READER, true>;
 	}
-	return HashFunction<OP, KEY, false>;
+	return HashFunction<OP, READER, false>;
 }
 
 // Picks the implementation for an input type already accepted by HashInputType().
 template <class OP>
 scalar_function_t GetHashFunction(const LogicalType &type, bool seeded) {
 	if (type.id() == LogicalTypeId::UUID) {
-		return HashImplementation<OP, UUIDBytes>(seeded);
+		return HashImplementation<OP, UUIDReader>(seeded);
 	}
 	switch (type.InternalType()) {
 	case PhysicalType::BOOL:
-		return HashImplementation<OP, ValueBytes<bool>>(seeded);
+		return HashImplementation<OP, ValueReader<bool>>(seeded);
 	case PhysicalType::INT8:
-		return HashImplementation<OP, ValueBytes<int8_t>>(seeded);
+		return HashImplementation<OP, ValueReader<int8_t>>(seeded);
 	case PhysicalType::INT16:
-		return HashImplementation<OP, ValueBytes<int16_t>>(seeded);
+		return HashImplementation<OP, ValueReader<int16_t>>(seeded);
 	case PhysicalType::INT32:
-		return HashImplementation<OP, ValueBytes<int32_t>>(seeded);
+		return HashImplementation<OP, ValueReader<int32_t>>(seeded);
 	case PhysicalType::INT64:
-		return HashImplementation<OP, ValueBytes<int64_t>>(seeded);
+		return HashImplementation<OP, ValueReader<int64_t>>(seeded);
 	case PhysicalType::INT128:
-		return HashImplementation<OP, ValueBytes<hugeint_t>>(seeded);
+		return HashImplementation<OP, ValueReader<hugeint_t>>(seeded);
 	case PhysicalType::UINT8:
-		return HashImplementation<OP, ValueBytes<uint8_t>>(seeded);
+		return HashImplementation<OP, ValueReader<uint8_t>>(seeded);
 	case PhysicalType::UINT16:
-		return HashImplementation<OP, ValueBytes<uint16_t>>(seeded);
+		return HashImplementation<OP, ValueReader<uint16_t>>(seeded);
 	case PhysicalType::UINT32:
-		return HashImplementation<OP, ValueBytes<uint32_t>>(seeded);
+		return HashImplementation<OP, ValueReader<uint32_t>>(seeded);
 	case PhysicalType::UINT64:
-		return HashImplementation<OP, ValueBytes<uint64_t>>(seeded);
+		return HashImplementation<OP, ValueReader<uint64_t>>(seeded);
 	case PhysicalType::UINT128:
-		return HashImplementation<OP, ValueBytes<uhugeint_t>>(seeded);
+		return HashImplementation<OP, ValueReader<uhugeint_t>>(seeded);
 	case PhysicalType::FLOAT:
-		return HashImplementation<OP, ValueBytes<float>>(seeded);
+		return HashImplementation<OP, ValueReader<float>>(seeded);
 	case PhysicalType::DOUBLE:
-		return HashImplementation<OP, ValueBytes<double>>(seeded);
+		return HashImplementation<OP, ValueReader<double>>(seeded);
 	case PhysicalType::INTERVAL:
-		return HashImplementation<OP, ValueBytes<interval_t>>(seeded);
+		return HashImplementation<OP, ValueReader<interval_t>>(seeded);
 	case PhysicalType::VARCHAR:
-		return HashImplementation<OP, StringBytes>(seeded);
+		return HashImplementation<OP, StringReader>(seeded);
+	case PhysicalType::STRUCT:
+	case PhysicalType::LIST:
+	case PhysicalType::ARRAY:
+		return HashImplementation<OP, NestedReader>(seeded);
 	default:
 		throw InternalException("hashfuncs: no hash implementation for type %s", type.ToString());
 	}
 }
 
 // Returns the type a value is hashed as, rejecting types without a stable byte representation while the query is
-// bound rather than when it runs.
+// bound rather than when it runs. NULL literals and ENUMs become VARCHAR, also inside nested types: a NULL literal
+// hashes to NULL, and ENUM values hash their label so they match a hash of the same VARCHAR.
 LogicalType HashInputType(const string &function_name, const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::BOOLEAN:
@@ -272,16 +513,31 @@ LogicalType HashInputType(const string &function_name, const LogicalType &type) 
 	case LogicalTypeId::VARCHAR:
 	case LogicalTypeId::BLOB:
 		return type;
-	// A NULL literal hashes to NULL. ENUM values hash their label, so they match a hash of the same VARCHAR.
 	case LogicalTypeId::SQLNULL:
 	case LogicalTypeId::ENUM:
 		return LogicalType::VARCHAR;
+	case LogicalTypeId::STRUCT: {
+		child_list_t<LogicalType> children;
+		for (auto &child : StructType::GetChildTypes(type)) {
+			children.emplace_back(child.first, HashInputType(function_name, child.second));
+		}
+		return LogicalType::STRUCT(std::move(children));
+	}
+	case LogicalTypeId::LIST:
+		return LogicalType::LIST(HashInputType(function_name, ListType::GetChildType(type)));
+	case LogicalTypeId::MAP:
+		return LogicalType::MAP(HashInputType(function_name, MapType::KeyType(type)),
+		                        HashInputType(function_name, MapType::ValueType(type)));
+	case LogicalTypeId::ARRAY:
+		return LogicalType::ARRAY(HashInputType(function_name, ArrayType::GetChildType(type)),
+		                          ArrayType::GetSize(type));
 	case LogicalTypeId::UNKNOWN:
 		throw ParameterNotResolvedException();
 	default:
 		throw BinderException(
 		    "%s cannot hash values of type %s. Supported types are BOOLEAN, integers, floating-point, "
-		    "DECIMAL, DATE, TIME, TIMESTAMP, INTERVAL, UUID, ENUM, VARCHAR and BLOB",
+		    "DECIMAL, DATE, TIME, TIMESTAMP, INTERVAL, UUID, ENUM, VARCHAR, BLOB, and STRUCT, LIST, "
+		    "MAP and ARRAY of those",
 		    function_name, type.ToString());
 	}
 }
@@ -326,24 +582,31 @@ void XXH3_128HexFunctionWithSeed(DataChunk &args, ExpressionState &state, Vector
 	    });
 }
 
-// Registers an algorithm as an unseeded and a seeded overload that accept any supported input type.
+// Registers an algorithm as an unseeded and a seeded overload that accept any supported input type. An INVALID
+// seed_type registers only the unseeded overload.
 template <class OP>
 void RegisterHashFunction(ExtensionLoader &loader, const string &name, const LogicalType &result_type,
-                          const LogicalType &seed_type, const string &description, const string &seeded_description) {
+                          const LogicalType &seed_type, const string &description, const string &seeded_description,
+                          const string &seed_name = "seed") {
+	const bool has_seed = seed_type.id() != LogicalTypeId::INVALID;
 	ScalarFunctionSet set(name);
 	set.AddFunction(ScalarFunction({LogicalType::ANY}, result_type, nullptr, HashBind<OP>));
-	set.AddFunction(ScalarFunction({LogicalType::ANY, seed_type}, result_type, nullptr, HashBind<OP>));
+	if (has_seed) {
+		set.AddFunction(ScalarFunction({LogicalType::ANY, seed_type}, result_type, nullptr, HashBind<OP>));
+	}
 	CreateScalarFunctionInfo info(set);
 	info.descriptions.push_back({/* parameter_types */ {LogicalType::ANY},
 	                             /* parameter_names */ {"value"},
 	                             /* description */ description,
-	                             /* examples */ {name + "('hello')"},
+	                             /* examples */ {name + "('hello')", name + "((1, 'a', [2.5, 3.5]))"},
 	                             /* categories */ {"hash"}});
-	info.descriptions.push_back({/* parameter_types */ {LogicalType::ANY, seed_type},
-	                             /* parameter_names */ {"value", "seed"},
-	                             /* description */ seeded_description,
-	                             /* examples */ {name + "('hello', 42)"},
-	                             /* categories */ {"hash"}});
+	if (has_seed) {
+		info.descriptions.push_back({/* parameter_types */ {LogicalType::ANY, seed_type},
+		                             /* parameter_names */ {"value", seed_name},
+		                             /* description */ seeded_description,
+		                             /* examples */ {name + "('hello', 42)"},
+		                             /* categories */ {"hash"}});
+	}
 	loader.RegisterFunction(info);
 }
 
@@ -430,6 +693,44 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    "Computes a 128-bit MurmurHash3 (x64 variant) non-cryptographic hash of the input. Optimized for 64-bit "
 	    "platforms",
 	    "Computes a 128-bit MurmurHash3 (x64 variant) non-cryptographic hash of the input with a seed");
+
+	RegisterHashFunction<WyhashOp>(
+	    loader, "wyhash", LogicalType::UBIGINT, LogicalType::UBIGINT,
+	    "Computes a 64-bit wyhash (final version 4) non-cryptographic hash of the input",
+	    "Computes a 64-bit wyhash (final version 4) non-cryptographic hash of the input with a seed");
+
+	RegisterHashFunction<KomihashOp>(
+	    loader, "komihash", LogicalType::UBIGINT, LogicalType::UBIGINT,
+	    "Computes a 64-bit komihash (version 5) non-cryptographic hash of the input",
+	    "Computes a 64-bit komihash (version 5) non-cryptographic hash of the input with a "
+	    "seed");
+
+	RegisterHashFunction<SipHash13Op>(
+	    loader, "siphash13", LogicalType::UBIGINT, LogicalType::UHUGEINT,
+	    "Computes a 64-bit SipHash-1-3 keyed hash of the input with an all-zero key",
+	    "Computes a 64-bit SipHash-1-3 keyed hash of the input. The 128-bit key is the UHUGEINT's 16 little-endian "
+	    "bytes; keep it secret to resist hash-flooding",
+	    "key");
+
+	RegisterHashFunction<SipHash24Op>(
+	    loader, "siphash24", LogicalType::UBIGINT, LogicalType::UHUGEINT,
+	    "Computes a 64-bit SipHash-2-4 keyed hash of the input with an all-zero key",
+	    "Computes a 64-bit SipHash-2-4 keyed hash of the input. The 128-bit key is the UHUGEINT's 16 little-endian "
+	    "bytes; keep it secret to resist hash-flooding",
+	    "key");
+
+	RegisterHashFunction<Crc32cOp>(
+	    loader, "crc32c", LogicalType::UINTEGER, LogicalType::UINTEGER,
+	    "Computes the CRC-32C (Castagnoli) checksum of the input",
+	    "Extends a CRC-32C checksum: crc32c(b, crc32c(a)) equals the checksum of a followed by b", "crc");
+
+	RegisterHashFunction<Fnv1a32Op>(loader, "fnv1a_32", LogicalType::UINTEGER, LogicalType::INVALID,
+	                                "Computes a 32-bit FNV-1a non-cryptographic hash of the input", "");
+
+	RegisterHashFunction<Fnv1a64Op>(loader, "fnv1a_64", LogicalType::UBIGINT, LogicalType::INVALID,
+	                                "Computes a 64-bit FNV-1a non-cryptographic hash of the input", "");
+
+	RegisterInteropFunctions(loader);
 
 	QueryFarmSendTelemetry(loader, "hashfuncs", HASHFUNCS_VERSION);
 }
