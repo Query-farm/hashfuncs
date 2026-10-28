@@ -88,7 +88,7 @@ CREATE TABLE all_types AS SELECT * FROM (VALUES
   (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
 ) t(b, ti, us, d, f, db, dt, tm, ts, tstz, ttz, iv, u, e, s, bl);
 
-foreach func xxh32 xxh64 xxh3_64 xxh3_128 rapidhash rapidhash_micro rapidhash_nano murmurhash3_32 murmurhash3_128 murmurhash3_x64_128
+foreach func xxh32 xxh64 xxh3_64 xxh3_128 rapidhash rapidhash_micro rapidhash_nano murmurhash3_32 murmurhash3_128 murmurhash3_x64_128 wyhash komihash siphash13 siphash24 crc32c
 
 foreach col b ti us d f db dt tm ts tstz ttz iv u e s bl
 
@@ -105,14 +105,15 @@ endloop
 
 # Unsupported types are rejected when the query is bound, even if no rows would be hashed.
 statement error
-SELECT xxh64(x) FROM (SELECT [1, 2] AS x) WHERE false;
+SELECT xxh64(x) FROM (SELECT '101'::BIT AS x) WHERE false;
 ----
-xxh64 cannot hash values of type INTEGER[]
+xxh64 cannot hash values of type BIT
 
+# Inside nested types too.
 statement error
-SELECT murmurhash3_32({'a': 1}, 1);
+SELECT murmurhash3_32({'a': [union_value(n := 1)]}, 1);
 ----
-murmurhash3_32 cannot hash values of type STRUCT(a INTEGER)
+murmurhash3_32 cannot hash values of type UNION(n INTEGER)
 
 # Prepared statement parameters are resolved from the value they are executed with.
 statement ok

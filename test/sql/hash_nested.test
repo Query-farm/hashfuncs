@@ -1,0 +1,128 @@
+# name: test/sql/hash_nested.test
+# description: STRUCT, LIST, MAP and ARRAY values hash their documented row encoding
+# group: [sql]
+
+require hashfuncs
+
+# A field is 0x00 when NULL, otherwise 0x01 and the value. Strings carry a little-endian uint64 length; fixed-width
+# values are their usual bytes. So (1, 'ab') is 01 | 01000000 | 01 | 0200000000000000 | 'ab'.
+query I
+SELECT xxh64((1, 'ab')) = xxh64('\x01\x01\x00\x00\x00\x01\x02\x00\x00\x00\x00\x00\x00\x00ab'::BLOB);
+----
+true
+
+query I
+SELECT xxh64((NULL::INTEGER, 'x')) = xxh64('\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00x'::BLOB);
+----
+true
+
+# Lists carry their element count, then each element as a field.
+query III
+SELECT xxh64([1, 2]) = xxh64('\x02\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x01\x02\x00\x00\x00'::BLOB),
+       xxh64([1, NULL]) = xxh64('\x02\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00'::BLOB),
+       xxh64([]::INTEGER[]) = xxh64('\x00\x00\x00\x00\x00\x00\x00\x00'::BLOB);
+----
+true	true	true
+
+# A MAP is a list of (key, value) structs.
+query I
+SELECT xxh64(MAP {'a': 1})
+     = xxh64('\x01\x00\x00\x00\x00\x00\x00\x00\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00a\x01\x01\x00\x00\x00'::BLOB);
+----
+true
+
+# ARRAY values hash like LIST values with the same elements, and STRUCT field names are not part of the hash.
+query II
+SELECT xxh64([1, 2]::INTEGER[2]) = xxh64([1, 2]), xxh64({'x': 1, 'y': 2}) = xxh64((1, 2));
+----
+true	true
+
+# Length prefixes and NULL markers keep different tuples apart.
+query III
+SELECT xxh64(('a|', 'b')) = xxh64(('a', '|b')),
+       xxh64(([1, 2], [3])) = xxh64(([1], [2, 3])),
+       xxh64((NULL::VARCHAR, 'a')) = xxh64(('a', NULL::VARCHAR));
+----
+false	false	false
+
+# A NULL nested value hashes to NULL; a value whose fields are all NULL does not.
+query II
+SELECT xxh64(NULL::STRUCT(a INTEGER)), xxh64({'a': NULL::INTEGER}) = xxh64('\x00'::BLOB);
+----
+NULL	true
+
+# UUIDs inside nested values use their 16 RFC 4122 bytes; ENUMs use their label.
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');
+
+query II
+SELECT xxh64(row('0123abcd-4567-89ef-0123-456789abcdef'::UUID))
+           = xxh64('\x01'::BLOB || unhex('0123abcd456789ef0123456789abcdef')),
+       xxh64(['happy'::mood, 'sad'::mood]) = xxh64(['happy', 'sad']);
+----
+true	true
+
+# Every algorithm hashes the same encoding, with and without a seed.
+foreach func xxh32 xxh64 xxh3_64 xxh3_128 rapidhash rapidhash_micro rapidhash_nano murmurhash3_32 murmurhash3_128 murmurhash3_x64_128 wyhash komihash siphash13 siphash24 crc32c
+
+query II
+SELECT {func}((1, 'ab')) = {func}('\x01\x01\x00\x00\x00\x01\x02\x00\x00\x00\x00\x00\x00\x00ab'::BLOB),
+       {func}((1, 'ab'), 7) = {func}('\x01\x01\x00\x00\x00\x01\x02\x00\x00\x00\x00\x00\x00\x00ab'::BLOB, 7);
+----
+true	true
+
+endloop
+
+foreach func fnv1a_32 fnv1a_64
+
+query I
+SELECT {func}((1, 'ab')) = {func}('\x01\x01\x00\x00\x00\x01\x02\x00\x00\x00\x00\x00\x00\x00ab'::BLOB);
+----
+true
+
+endloop
+
+# Nested hashes are the same whether a value arrives in a full vector, through a selection, shuffled, or alone.
+statement ok
+CREATE TABLE nested AS
+SELECT i AS id,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE {'n': i, 's': CASE WHEN i % 5 = 0 THEN NULL ELSE 'v' || i END,
+                                             'l': CASE WHEN i % 7 = 0 THEN NULL ELSE [i, NULL, i * 2] END} END AS v,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE MAP {'k' || i: [i::DOUBLE]} END AS m,
+       [i, i + 1]::BIGINT[2] AS a
+FROM range(5000) t(i);
+
+statement ok
+CREATE TABLE expected AS SELECT id, xxh3_64(v) AS hv, xxh3_64(m) AS hm, xxh3_64(a) AS ha, xxh3_64((v, m, a), 3) AS hr
+FROM nested;
+
+query I
+SELECT count(*) FROM nested JOIN expected USING (id)
+WHERE id % 3 = 1
+  AND (xxh3_64(v) IS DISTINCT FROM hv OR xxh3_64(m) IS DISTINCT FROM hm OR xxh3_64(a) IS DISTINCT FROM ha
+       OR xxh3_64((v, m, a), 3) IS DISTINCT FROM hr);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM nested ORDER BY hash(id)) n JOIN expected USING (id)
+WHERE xxh3_64(n.v) IS DISTINCT FROM hv OR xxh3_64(n.m) IS DISTINCT FROM hm OR xxh3_64(n.a) IS DISTINCT FROM ha;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT id, UNNEST([v]) AS v FROM nested) n JOIN expected USING (id)
+WHERE xxh3_64(n.v) IS DISTINCT FROM hv;
+----
+0
+
+query III
+SELECT xxh3_64(v) = hv, xxh3_64(m) = hm, xxh3_64((v, m, a), 3) = hr FROM nested JOIN expected USING (id) WHERE id = 17;
+----
+true	true	true
+
+# The NULL rows hash to NULL, and the NULL fields inside non-NULL rows do not.
+query II
+SELECT count(*) FILTER (WHERE hv IS NULL), count(*) FILTER (WHERE v IS NULL) FROM expected JOIN nested USING (id);
+----
+455	455

@@ -32,6 +32,30 @@ xxh3_64	[value, seed]
 xxh64	[value]
 xxh64	[value, seed]
 
+query II
+SELECT DISTINCT function_name, parameters FROM duckdb_functions()
+WHERE function_name IN ('wyhash', 'komihash', 'siphash13', 'siphash24', 'crc32c', 'fnv1a_32', 'fnv1a_64', 'farm_fingerprint', 'spark_hash', 'spark_xxhash64', 'kafka_murmur2', 'kafka_partition', 'clickhouse_cityhash64')
+ORDER BY ALL;
+----
+clickhouse_cityhash64	[value]
+crc32c	[value]
+crc32c	[value, crc]
+farm_fingerprint	[value]
+fnv1a_32	[value]
+fnv1a_64	[value]
+kafka_murmur2	[value]
+kafka_partition	[key, partitions]
+komihash	[value]
+komihash	[value, seed]
+siphash13	[value]
+siphash13	[value, key]
+siphash24	[value]
+siphash24	[value, key]
+spark_hash	[value]
+spark_xxhash64	[value]
+wyhash	[value]
+wyhash	[value, seed]
+
 # The parameters are still positional: calls work as before
 
 query II
