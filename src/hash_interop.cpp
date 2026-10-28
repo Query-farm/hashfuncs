@@ -5,6 +5,8 @@
 #include "duckdb/planner/expression.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "xxhash.h"
+#include "MurmurHash3.h"
+#include "duckdb/common/types/uuid.hpp"
 #include "vendored_hashes.hpp"
 
 #include <cmath>
@@ -506,6 +508,243 @@ void RegisterSparkFunction(ExtensionLoader &loader, const string &name, const Lo
 	loader.RegisterFunction(info);
 }
 
+// Iceberg's 32-bit hash (spec, Appendix B): MurmurHash3 x86_32 with seed 0 over the value's Iceberg encoding.
+int32_t IcebergHashBytes(const void *data, idx_t size) {
+	if (size > static_cast<idx_t>(NumericLimits<int32_t>::Maximum())) {
+		throw InvalidInputException("Iceberg hashing supports values of at most 2147483647 bytes, got %llu",
+		                            static_cast<unsigned long long>(size));
+	}
+	uint32_t hash;
+	MurmurHash3_x86_32(data, static_cast<int>(size), 0, &hash);
+	return static_cast<int32_t>(hash);
+}
+
+// Every integer type hashes as an 8-byte little-endian long, so int and long values hash the same.
+int32_t IcebergHashLong(int64_t value) {
+	uint8_t bytes[8];
+	for (idx_t i = 0; i < 8; i++) {
+		bytes[i] = uint8_t(uint64_t(value) >> (8 * i));
+	}
+	return IcebergHashBytes(bytes, sizeof(bytes));
+}
+
+// Nanosecond timestamps are floored to microseconds before hashing, so they hash like the same microsecond value.
+int64_t NanosToMicros(int64_t nanos) {
+	return nanos / 1000 - (nanos % 1000 < 0 ? 1 : 0);
+}
+
+int32_t IcebergHashDecimal(hugeint_t unscaled) {
+	uint8_t bytes[16];
+	const auto start = JavaBigIntegerBytes(unscaled, bytes);
+	return IcebergHashBytes(bytes + start, sizeof(bytes) - start);
+}
+
+// Writes the Iceberg hash of every row of `input` into `hashes`, and whether the row is non-NULL into `valid`.
+template <class T, class HASH>
+void IcebergHashRows(Vector &input, idx_t count, int32_t *hashes, bool *valid, HASH hash) {
+	UnifiedVectorFormat format;
+	input.ToUnifiedFormat(count, format);
+	auto values = UnifiedVectorFormat::GetData<T>(format);
+	for (idx_t i = 0; i < count; i++) {
+		const auto idx = format.sel->get_index(i);
+		valid[i] = format.validity.RowIsValid(idx);
+		if (valid[i]) {
+			hashes[i] = hash(values[idx]);
+		}
+	}
+}
+
+void IcebergHashVector(Vector &input, idx_t count, int32_t *hashes, bool *valid) {
+	const auto &type = input.GetType();
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+		return IcebergHashRows<int8_t>(input, count, hashes, valid, IcebergHashLong);
+	case LogicalTypeId::SMALLINT:
+		return IcebergHashRows<int16_t>(input, count, hashes, valid, IcebergHashLong);
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::DATE:
+		return IcebergHashRows<int32_t>(input, count, hashes, valid, IcebergHashLong);
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return IcebergHashRows<int64_t>(input, count, hashes, valid, IcebergHashLong);
+	case LogicalTypeId::UTINYINT:
+		return IcebergHashRows<uint8_t>(input, count, hashes, valid, IcebergHashLong);
+	case LogicalTypeId::USMALLINT:
+		return IcebergHashRows<uint16_t>(input, count, hashes, valid, IcebergHashLong);
+	case LogicalTypeId::UINTEGER:
+		return IcebergHashRows<uint32_t>(input, count, hashes, valid, IcebergHashLong);
+	case LogicalTypeId::TIMESTAMP_NS:
+		return IcebergHashRows<int64_t>(input, count, hashes, valid,
+		                                [](int64_t nanos) { return IcebergHashLong(NanosToMicros(nanos)); });
+	case LogicalTypeId::DECIMAL:
+		switch (type.InternalType()) {
+		case PhysicalType::INT16:
+			return IcebergHashRows<int16_t>(input, count, hashes, valid,
+			                                [](int16_t v) { return IcebergHashDecimal(hugeint_t(v)); });
+		case PhysicalType::INT32:
+			return IcebergHashRows<int32_t>(input, count, hashes, valid,
+			                                [](int32_t v) { return IcebergHashDecimal(hugeint_t(v)); });
+		case PhysicalType::INT64:
+			return IcebergHashRows<int64_t>(input, count, hashes, valid,
+			                                [](int64_t v) { return IcebergHashDecimal(hugeint_t(v)); });
+		default:
+			return IcebergHashRows<hugeint_t>(input, count, hashes, valid, IcebergHashDecimal);
+		}
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::BLOB:
+		return IcebergHashRows<string_t>(input, count, hashes, valid, [](const string_t &value) {
+			return IcebergHashBytes(value.GetData(), value.GetSize());
+		});
+	case LogicalTypeId::UUID:
+		return IcebergHashRows<hugeint_t>(input, count, hashes, valid, [](hugeint_t value) {
+			data_t bytes[16];
+			UUID::ToBlob(value, bytes);
+			return IcebergHashBytes(bytes, sizeof(bytes));
+		});
+	default:
+		throw InternalException("iceberg hash: unexpected type %s", type.ToString());
+	}
+}
+
+// Returns the type a value is hashed as for Iceberg, or throws for types Iceberg can't bucket: BOOLEAN, FLOAT,
+// DOUBLE, BIGINT-overflowing integers (UBIGINT, HUGEINT, UHUGEINT), INTERVAL, TIME WITH TIME ZONE and nested types.
+LogicalType IcebergInputType(const string &function_name, const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::DECIMAL:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::BLOB:
+	case LogicalTypeId::UUID:
+		return type;
+	// Iceberg timestamps have microsecond precision; these casts are exact.
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+		return LogicalType::TIMESTAMP;
+	// An ENUM is stored in Iceberg as its string label; a NULL literal hashes to NULL.
+	case LogicalTypeId::ENUM:
+	case LogicalTypeId::SQLNULL:
+		return LogicalType::VARCHAR;
+	case LogicalTypeId::UNKNOWN:
+		throw ParameterNotResolvedException();
+	default:
+		throw BinderException("%s cannot hash values of type %s: Iceberg can't bucket it. Supported types are "
+		                      "integers up to BIGINT, DECIMAL, DATE, TIME, TIMESTAMP (any precision), TIMESTAMPTZ, "
+		                      "VARCHAR, BLOB and UUID",
+		                      function_name, type.ToString());
+	}
+}
+
+unique_ptr<FunctionData> IcebergBind(ClientContext &context, ScalarFunction &bound_function,
+                                     vector<unique_ptr<Expression>> &arguments) {
+	bound_function.arguments[0] = IcebergInputType(bound_function.name, arguments[0]->return_type);
+	return nullptr;
+}
+
+// Reads a bucket count argument, which must fit Iceberg's and Jump Hash's 32-bit bucket counts.
+int32_t BucketCount(const char *function_name, int64_t buckets) {
+	if (buckets <= 0 || buckets > NumericLimits<int32_t>::Maximum()) {
+		throw InvalidInputException("%s: the number of buckets must be between 1 and 2147483647, got %lld",
+		                            function_name, static_cast<long long>(buckets));
+	}
+	return static_cast<int32_t>(buckets);
+}
+
+// iceberg_hash(value) and iceberg_bucket(value, n): BUCKETED selects the bucket form.
+template <bool BUCKETED>
+void IcebergFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	bool all_constant = true;
+	for (auto &arg : args.data) {
+		all_constant = all_constant && arg.GetVectorType() == VectorType::CONSTANT_VECTOR;
+	}
+	const idx_t count = all_constant ? 1 : args.size();
+	result.SetVectorType(all_constant ? VectorType::CONSTANT_VECTOR : VectorType::FLAT_VECTOR);
+	auto results = all_constant ? ConstantVector::GetData<int32_t>(result) : FlatVector::GetData<int32_t>(result);
+
+	vector<int32_t> hashes(count);
+	unique_ptr<bool[]> valid(new bool[count]);
+	IcebergHashVector(args.data[0], count, hashes.data(), valid.get());
+
+	UnifiedVectorFormat bucket_format;
+	if (BUCKETED) {
+		args.data[1].ToUnifiedFormat(count, bucket_format);
+	}
+	for (idx_t i = 0; i < count; i++) {
+		if (!valid[i]) {
+			SetResultNull(result, all_constant, i);
+			continue;
+		}
+		if (!BUCKETED) {
+			results[i] = hashes[i];
+			continue;
+		}
+		const auto bucket_idx = bucket_format.sel->get_index(i);
+		if (!bucket_format.validity.RowIsValid(bucket_idx)) {
+			SetResultNull(result, all_constant, i);
+			continue;
+		}
+		const auto buckets =
+		    BucketCount("iceberg_bucket", UnifiedVectorFormat::GetData<int64_t>(bucket_format)[bucket_idx]);
+		results[i] = (hashes[i] & NumericLimits<int32_t>::Maximum()) % buckets;
+	}
+}
+
+// Jump consistent hash (Lamping and Veach, "A Fast, Minimal Memory, Consistent Hash Algorithm", 2014). When the
+// bucket count grows from n to n + 1, only about 1/(n + 1) of keys move. Guava's Hashing.consistentHash returns the
+// same buckets.
+int32_t JumpConsistentHash(uint64_t key, int32_t buckets) {
+	int64_t bucket = -1;
+	int64_t next = 0;
+	while (next < buckets) {
+		bucket = next;
+		key = key * 2862933555777941757ULL + 1;
+		next = static_cast<int64_t>(static_cast<double>(bucket + 1) *
+		                            (static_cast<double>(int64_t(1) << 31) / static_cast<double>((key >> 33) + 1)));
+	}
+	return static_cast<int32_t>(bucket);
+}
+
+// The key is read as its 64 bits, so a BIGINT and the UBIGINT with the same bits land in the same bucket.
+template <class KEY>
+void JumpHashFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &keys = args.data[0];
+	auto &buckets = args.data[1];
+	const bool constant =
+	    keys.GetVectorType() == VectorType::CONSTANT_VECTOR && buckets.GetVectorType() == VectorType::CONSTANT_VECTOR;
+	const idx_t count = constant ? 1 : args.size();
+	result.SetVectorType(constant ? VectorType::CONSTANT_VECTOR : VectorType::FLAT_VECTOR);
+	auto results = constant ? ConstantVector::GetData<int32_t>(result) : FlatVector::GetData<int32_t>(result);
+
+	UnifiedVectorFormat key_format;
+	UnifiedVectorFormat bucket_format;
+	keys.ToUnifiedFormat(count, key_format);
+	buckets.ToUnifiedFormat(count, bucket_format);
+	auto key_values = UnifiedVectorFormat::GetData<KEY>(key_format);
+	auto bucket_values = UnifiedVectorFormat::GetData<int64_t>(bucket_format);
+	for (idx_t i = 0; i < count; i++) {
+		const auto key_idx = key_format.sel->get_index(i);
+		const auto bucket_idx = bucket_format.sel->get_index(i);
+		if (!key_format.validity.RowIsValid(key_idx) || !bucket_format.validity.RowIsValid(bucket_idx)) {
+			SetResultNull(result, constant, i);
+			continue;
+		}
+		results[i] = JumpConsistentHash(static_cast<uint64_t>(key_values[key_idx]),
+		                                BucketCount("jump_hash", bucket_values[bucket_idx]));
+	}
+}
+
 } // namespace
 
 void RegisterInteropFunctions(ExtensionLoader &loader) {
@@ -547,6 +786,60 @@ void RegisterInteropFunctions(ExtensionLoader &loader) {
 		     /* categories */ {"hash"}});
 	}
 	loader.RegisterFunction(kafka_partition_info);
+
+	// Iceberg's bucket transform and the 32-bit hash it uses. Both can raise an error while running (an invalid
+	// bucket count, or a value over 2 GiB), so they are fallible.
+	ScalarFunction iceberg_hash("iceberg_hash", {LogicalType::ANY}, LogicalType::INTEGER, IcebergFunction<false>,
+	                            IcebergBind);
+	iceberg_hash.SetFallible();
+	CreateScalarFunctionInfo iceberg_hash_info(iceberg_hash);
+	iceberg_hash_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY},
+	     /* parameter_names */ {"value"},
+	     /* description */
+	     "Computes Iceberg's 32-bit bucket hash of the input (spec Appendix B): MurmurHash3 x86_32 with seed 0 over "
+	     "Iceberg's encoding of the value. Integers of every width hash alike, DECIMAL hashes its unscaled value and "
+	     "timestamps hash as microseconds",
+	     /* examples */ {"iceberg_hash('iceberg')", "iceberg_hash(34)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(iceberg_hash_info);
+
+	ScalarFunction iceberg_bucket("iceberg_bucket", {LogicalType::ANY, LogicalType::BIGINT}, LogicalType::INTEGER,
+	                              IcebergFunction<true>, IcebergBind);
+	iceberg_bucket.SetFallible();
+	CreateScalarFunctionInfo iceberg_bucket_info(iceberg_bucket);
+	iceberg_bucket_info.descriptions.push_back(
+	    {/* parameter_types */ {LogicalType::ANY, LogicalType::BIGINT},
+	     /* parameter_names */ {"value", "buckets"},
+	     /* description */
+	     "Returns the Iceberg bucket[N] partition of the input: (iceberg_hash(value) & 2147483647) % buckets, as "
+	     "Iceberg's bucket transform computes it",
+	     /* examples */ {"iceberg_bucket('iceberg', 16)", "iceberg_bucket(34, 16)"},
+	     /* categories */ {"hash"}});
+	loader.RegisterFunction(iceberg_bucket_info);
+
+	ScalarFunctionSet jump_hash_set("jump_hash");
+	for (auto &key_type : {LogicalType::UBIGINT, LogicalType::BIGINT}) {
+		ScalarFunction jump_hash({key_type, LogicalType::BIGINT}, LogicalType::INTEGER,
+		                         key_type == LogicalType::UBIGINT ? JumpHashFunction<uint64_t>
+		                                                          : JumpHashFunction<int64_t>);
+		// An invalid bucket count raises an error while the query runs.
+		jump_hash.SetFallible();
+		jump_hash_set.AddFunction(jump_hash);
+	}
+	CreateScalarFunctionInfo jump_hash_info(jump_hash_set);
+	for (auto &key_type : {LogicalType::UBIGINT, LogicalType::BIGINT}) {
+		jump_hash_info.descriptions.push_back(
+		    {/* parameter_types */ {key_type, LogicalType::BIGINT},
+		     /* parameter_names */ {"key", "buckets"},
+		     /* description */
+		     "Assigns a 64-bit key to one of `buckets` buckets with Jump consistent hash: when the bucket count grows "
+		     "from n to n + 1, only about 1/(n + 1) of keys move. Hash the value first, e.g. jump_hash(xxh3_64(x), n). "
+		     "Matches Guava's Hashing.consistentHash",
+		     /* examples */ {"jump_hash(xxh3_64('user-42'), 16)"},
+		     /* categories */ {"hash"}});
+	}
+	loader.RegisterFunction(jump_hash_info);
 
 	RegisterStringFunction(loader, "clickhouse_cityhash64", LogicalType::UBIGINT,
 	                       StringHashFunction<ClickHouseCityHash64Hasher>,

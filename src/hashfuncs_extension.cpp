@@ -22,7 +22,7 @@
 #include "query_farm_telemetry.hpp"
 namespace duckdb {
 
-static constexpr const char *HASHFUNCS_VERSION = "2026102802";
+static constexpr const char *HASHFUNCS_VERSION = "2026102803";
 
 // The per-row hash wrappers must inline into HashFunction's loop: when the compiler declined to inline RapidHash's
 // wrapper, short strings hashed 16% slower.

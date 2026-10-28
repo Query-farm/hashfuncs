@@ -1,4 +1,4 @@
-"""Generate test/sql/hash_interop.test and test/sql/hash_algorithms.test from reference implementations.
+"""Generate test/sql/hash_interop.test, hash_algorithms.test and hash_iceberg.test from reference implementations.
 
 Expected values come from the real systems, never from this extension:
   * Spark spark-sql                  -> spark_hash, spark_xxhash64
@@ -7,11 +7,14 @@ Expected values come from the real systems, never from this extension:
   * hash4j (jshell)                  -> wyhash (final 4), komihash (5.x), farm_fingerprint (farmHashNa)
   * java.util.zip.CRC32C (jshell)    -> crc32c
   * Rust core SipHash test vectors   -> siphash13, siphash24
+  * iceberg-api (jshell)             -> iceberg_hash, iceberg_bucket (Transforms.bucket and BucketUtil)
+  * Guava (jshell)                   -> jump_hash (Hashing.consistentHash)
 BigQuery's documented FARM_FINGERPRINT examples are written into the test directly.
 
 Requirements: Python 3.9+, Java 17+ (jshell), Docker (pulls clickhouse/clickhouse-server), and a <refs-dir> holding
   spark-4.2.1-bin-hadoop3/   https://archive.apache.org/dist/spark/spark-4.2.1/
-  kafka-clients-4.4.0.jar, slf4j-api-2.0.17.jar, hash4j-0.31.0.jar   from Maven Central
+  kafka-clients-4.4.0.jar, slf4j-api-2.0.17.jar, hash4j-0.31.0.jar, iceberg-api-1.12.0.jar,
+  iceberg-bundled-guava-1.12.0.jar, guava-33.4.8-jre.jar   from Maven Central
   rust_sip.rs                rust-lang/rust library/coretests/tests/hash/sip.rs
 
 Usage: python3 -I scripts/gen_refs.py <refs-dir> test/sql
@@ -265,3 +268,142 @@ with open(os.path.join(out_dir, "hash_algorithms.test"), "w", encoding="utf-8") 
     f.write("\n".join(algorithms))
 print("spark cases:", len(SPARK_CASES), "strings:", len(STRINGS))
 print("clickhouse sipHash64 equals reference SipHash-2-4 with zero key: see hash_algorithms.test")
+
+# ---------------------------------------------------------------------------------------------------------------
+# Iceberg bucket transform (iceberg-api's Transforms.bucket and BucketUtil) and Jump consistent hash (Guava).
+ICEBERG_API_JAR = os.path.join(refs, "iceberg-api-1.12.0.jar")
+ICEBERG_GUAVA_JAR = os.path.join(refs, "iceberg-bundled-guava-1.12.0.jar")
+GUAVA_JAR = os.path.join(refs, "guava-33.4.8-jre.jar")
+
+# (DuckDB SQL, Java value, Iceberg type, Java expression for the raw 32-bit hash)
+ICEBERG_CASES = [
+    ("34", "Integer.valueOf(34)", "Types.IntegerType.get()", "BucketUtil.hash(34)"),
+    ("34::TINYINT", "Integer.valueOf(34)", "Types.IntegerType.get()", "BucketUtil.hash(34)"),
+    ("(-1)::INTEGER", "Integer.valueOf(-1)", "Types.IntegerType.get()", "BucketUtil.hash(-1)"),
+    ("2147483647", "Integer.valueOf(2147483647)", "Types.IntegerType.get()", "BucketUtil.hash(2147483647)"),
+    ("(-2147483648)::INTEGER", "Integer.valueOf(-2147483648)", "Types.IntegerType.get()",
+     "BucketUtil.hash(-2147483648)"),
+    ("34::BIGINT", "Long.valueOf(34L)", "Types.LongType.get()", "BucketUtil.hash(34L)"),
+    ("4294967295::UINTEGER", "Long.valueOf(4294967295L)", "Types.LongType.get()", "BucketUtil.hash(4294967295L)"),
+    ("9223372036854775807::BIGINT", "Long.valueOf(9223372036854775807L)", "Types.LongType.get()",
+     "BucketUtil.hash(9223372036854775807L)"),
+    ("(-9223372036854775808)::BIGINT", "Long.valueOf(-9223372036854775808L)", "Types.LongType.get()",
+     "BucketUtil.hash(-9223372036854775808L)"),
+    ("14.20::DECIMAL(4,2)", 'new BigDecimal("14.20")', "Types.DecimalType.of(4, 2)", 'BucketUtil.hash(new BigDecimal("14.20"))'),
+    ("(-14.20)::DECIMAL(9,2)", 'new BigDecimal("-14.20")', "Types.DecimalType.of(9, 2)",
+     'BucketUtil.hash(new BigDecimal("-14.20"))'),
+    ("0::DECIMAL(18,3)", 'new BigDecimal("0.000")', "Types.DecimalType.of(18, 3)", 'BucketUtil.hash(new BigDecimal("0.000"))'),
+    ("128::DECIMAL(25,0)", 'new BigDecimal("128")', "Types.DecimalType.of(25, 0)", 'BucketUtil.hash(new BigDecimal("128"))'),
+    ("(-1)::DECIMAL(20,0)", 'new BigDecimal("-1")', "Types.DecimalType.of(20, 0)", 'BucketUtil.hash(new BigDecimal("-1"))'),
+    ("1234567890123456789.012::DECIMAL(22,3)", 'new BigDecimal("1234567890123456789.012")', "Types.DecimalType.of(22, 3)",
+     'BucketUtil.hash(new BigDecimal("1234567890123456789.012"))'),
+    ("(-99999999999999999999999999999999999999)::DECIMAL(38,0)",
+     'new BigDecimal("-99999999999999999999999999999999999999")', "Types.DecimalType.of(38, 0)",
+     'BucketUtil.hash(new BigDecimal("-99999999999999999999999999999999999999"))'),
+    ("DATE '2017-11-16'", 'Integer.valueOf((int) LocalDate.parse("2017-11-16").toEpochDay())', "Types.DateType.get()",
+     'BucketUtil.hash((int) LocalDate.parse("2017-11-16").toEpochDay())'),
+    ("DATE '1960-01-01'", 'Integer.valueOf((int) LocalDate.parse("1960-01-01").toEpochDay())', "Types.DateType.get()",
+     'BucketUtil.hash((int) LocalDate.parse("1960-01-01").toEpochDay())'),
+    ("TIME '22:31:08'", 'Long.valueOf(LocalTime.parse("22:31:08").toNanoOfDay() / 1000)', "Types.TimeType.get()",
+     'BucketUtil.hash(LocalTime.parse("22:31:08").toNanoOfDay() / 1000)'),
+    ("TIMESTAMP '2017-11-16 22:31:08'", 'Long.valueOf(micros("2017-11-16T22:31:08"))', "Types.TimestampType.withoutZone()",
+     'BucketUtil.hash(micros("2017-11-16T22:31:08"))'),
+    ("TIMESTAMP '2017-11-16 22:31:08.000001'", 'Long.valueOf(micros("2017-11-16T22:31:08.000001"))',
+     "Types.TimestampType.withoutZone()", 'BucketUtil.hash(micros("2017-11-16T22:31:08.000001"))'),
+    ("TIMESTAMP '1960-01-01 00:00:00.5'", 'Long.valueOf(micros("1960-01-01T00:00:00.5"))',
+     "Types.TimestampType.withoutZone()", 'BucketUtil.hash(micros("1960-01-01T00:00:00.5"))'),
+    ("TIMESTAMP_MS '2017-11-16 22:31:08.123'", 'Long.valueOf(micros("2017-11-16T22:31:08.123"))',
+     "Types.TimestampType.withoutZone()", 'BucketUtil.hash(micros("2017-11-16T22:31:08.123"))'),
+    ("TIMESTAMPTZ '2017-11-16 14:31:08-08:00'", 'Long.valueOf(microsTz("2017-11-16T14:31:08-08:00"))',
+     "Types.TimestampType.withZone()", 'BucketUtil.hash(microsTz("2017-11-16T14:31:08-08:00"))'),
+    ("TIMESTAMP_NS '2017-11-16 22:31:08.000001001'", 'Long.valueOf(nanos("2017-11-16T22:31:08.000001001"))',
+     "Types.TimestampNanoType.withoutZone()", 'BucketUtil.hash(Math.floorDiv(nanos("2017-11-16T22:31:08.000001001"), 1000L))'),
+    ("TIMESTAMP_NS '1969-12-31 23:59:59.999999999'", 'Long.valueOf(nanos("1969-12-31T23:59:59.999999999"))',
+     "Types.TimestampNanoType.withoutZone()", 'BucketUtil.hash(Math.floorDiv(nanos("1969-12-31T23:59:59.999999999"), 1000L))'),
+    ("'iceberg'", '"iceberg"', "Types.StringType.get()", 'BucketUtil.hash("iceberg")'),
+    ("''", '""', "Types.StringType.get()", 'BucketUtil.hash("")'),
+    ("'ünïcödé ✓'", java_literal("ünïcödé ✓"), "Types.StringType.get()", "BucketUtil.hash(" + java_literal("ünïcödé ✓") + ")"),
+    ("repeat('0123456789', 30)", '"0123456789".repeat(30)', "Types.StringType.get()", 'BucketUtil.hash("0123456789".repeat(30))'),
+    ("'f79c3e09-677c-4bbd-a479-3f349cb785e7'::UUID", 'UUID.fromString("f79c3e09-677c-4bbd-a479-3f349cb785e7")',
+     "Types.UUIDType.get()", 'BucketUtil.hash(UUID.fromString("f79c3e09-677c-4bbd-a479-3f349cb785e7"))'),
+    ("unhex('00010203')", "ByteBuffer.wrap(new byte[] {0, 1, 2, 3})", "Types.BinaryType.get()",
+     "BucketUtil.hash(ByteBuffer.wrap(new byte[] {0, 1, 2, 3}))"),
+]
+ICEBERG_BUCKETS = [1, 16, 1000]
+
+JUMP_KEYS = [0, 1, 42, -1, -9223372036854775808, 9223372036854775807]
+_x = 88172645463325252
+for _ in range(14):
+    _x ^= (_x << 13) & 0xFFFFFFFFFFFFFFFF
+    _x ^= _x >> 7
+    _x ^= (_x << 17) & 0xFFFFFFFFFFFFFFFF
+    JUMP_KEYS.append(_x - (1 << 64) if _x >= (1 << 63) else _x)
+JUMP_BUCKETS = [1, 2, 3, 10, 16, 1000, 1000003, 2147483647]
+
+
+def run_iceberg_and_jump():
+    lines = [
+        "import java.math.BigDecimal;", "import java.nio.ByteBuffer;", "import java.time.*;",
+        "import java.time.temporal.ChronoUnit;", "import java.util.UUID;", "import org.apache.iceberg.types.Types;",
+        "import org.apache.iceberg.transforms.Transforms;", "import org.apache.iceberg.util.BucketUtil;",
+        "import com.google.common.hash.Hashing;",
+        'long micros(String s) { return ChronoUnit.MICROS.between(Instant.EPOCH, LocalDateTime.parse(s).toInstant(ZoneOffset.UTC)); }',
+        'long microsTz(String s) { return ChronoUnit.MICROS.between(Instant.EPOCH, OffsetDateTime.parse(s).toInstant()); }',
+        'long nanos(String s) { return ChronoUnit.NANOS.between(Instant.EPOCH, LocalDateTime.parse(s).toInstant(ZoneOffset.UTC)); }',
+    ]
+    for i, (_, value, iceberg_type, hash_expr) in enumerate(ICEBERG_CASES):
+        lines.append(f'System.out.println("ihash|{i}|" + {hash_expr});')
+        for n in ICEBERG_BUCKETS:
+            lines.append(f'System.out.println("ibucket|{i}|{n}|" + '
+                         f'((java.util.function.Function<Object, Integer>) Transforms.bucket({n}).bind({iceberg_type})).apply({value}));')
+    for i, key in enumerate(JUMP_KEYS):
+        for n in JUMP_BUCKETS:
+            lines.append(f'System.out.println("jump|{i}|{n}|" + Hashing.consistentHash({key}L, {n}));')
+    lines.append("/exit")
+    path = "/tmp/hashfuncs_iceberg_refs.jsh"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    classpath = ":".join([ICEBERG_API_JAR, ICEBERG_GUAVA_JAR, GUAVA_JAR])
+    proc = subprocess.run(["jshell", "--class-path", classpath, path], capture_output=True, text=True, check=True)
+    results = {}
+    for line in proc.stdout.splitlines():
+        parts = line.strip().split("|")
+        if parts[0] in ("ihash", "ibucket", "jump"):
+            results[tuple(parts[:-1])] = int(parts[-1])
+    expected = len(ICEBERG_CASES) * (1 + len(ICEBERG_BUCKETS)) + len(JUMP_KEYS) * len(JUMP_BUCKETS)
+    assert len(results) == expected, (len(results), expected, proc.stdout[-2000:], proc.stderr[-3000:])
+    return results
+
+
+iceberg_jump = run_iceberg_and_jump()
+iceberg = header("hash_iceberg.test", "iceberg_hash, iceberg_bucket and jump_hash match Iceberg's and Guava's results")
+iceberg += ["# The test values printed in the Iceberg spec, Appendix B.", "query IIIIIIII",
+            "SELECT iceberg_hash(34), iceberg_hash(34::BIGINT), iceberg_hash(14.20::DECIMAL(4,2)), "
+            "iceberg_hash(DATE '2017-11-16'), iceberg_hash(TIME '22:31:08'), "
+            "iceberg_hash(TIMESTAMP '2017-11-16 22:31:08'), iceberg_hash('iceberg'), "
+            "iceberg_hash('f79c3e09-677c-4bbd-a479-3f349cb785e7'::UUID);", "----",
+            "\t".join(["2017239379", "2017239379", "-500754589", "-653330422", "-662762989", "-2047944441",
+                       "1210000089", "1488055340"]), "",
+            "query III",
+            "SELECT iceberg_hash(TIMESTAMP '2017-11-16 22:31:08.000001'), "
+            "iceberg_hash(TIMESTAMP_NS '2017-11-16 22:31:08.000001001'), iceberg_hash(unhex('00010203'));", "----",
+            "\t".join(["-1207196810", "-1207196810", "-188683207"]), "",
+            "# Iceberg 1.12.0: BucketUtil.hash and Transforms.bucket(n).bind(type).apply(value)."]
+for i, (duck, _, _, _) in enumerate(ICEBERG_CASES):
+    values = [iceberg_jump[("ihash", str(i))]] + [iceberg_jump[("ibucket", str(i), str(n))] for n in ICEBERG_BUCKETS]
+    calls = [f"iceberg_hash({duck})"] + [f"iceberg_bucket({duck}, {n})" for n in ICEBERG_BUCKETS]
+    iceberg += ["query " + "I" * len(calls), "SELECT " + ", ".join(calls) + ";", "----",
+                "\t".join(str(v) for v in values), ""]
+iceberg += ["# Guava 33.4.8 Hashing.consistentHash; a BIGINT key and the UBIGINT with the same bits agree."]
+for i, key in enumerate(JUMP_KEYS):
+    values = [iceberg_jump[("jump", str(i), str(n))] for n in JUMP_BUCKETS]
+    unsigned = key & 0xFFFFFFFFFFFFFFFF
+    calls = [f"jump_hash(({key})::BIGINT, {n})" for n in JUMP_BUCKETS]
+    iceberg += ["query " + "I" * len(calls), "SELECT " + ", ".join(calls) + ";", "----",
+                "\t".join(str(v) for v in values), ""]
+    calls = [f"jump_hash({unsigned}::UBIGINT, {n})" for n in JUMP_BUCKETS]
+    iceberg += ["query " + "I" * len(calls), "SELECT " + ", ".join(calls) + ";", "----",
+                "\t".join(str(v) for v in values), ""]
+with open(os.path.join(out_dir, "hash_iceberg.test"), "w", encoding="utf-8") as f:
+    f.write("\n".join(iceberg))
+print("iceberg cases:", len(ICEBERG_CASES), "jump keys:", len(JUMP_KEYS))
