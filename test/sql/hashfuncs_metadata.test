@@ -1,0 +1,39 @@
+# name: test/sql/hashfuncs_metadata.test
+# description: every hashfuncs function has a description, examples, categories and named parameters
+# group: [hashfuncs]
+
+require hashfuncs
+
+# The extension's function names, so a newly registered function can't slip through without metadata.
+query I
+SELECT string_agg(DISTINCT function_name, ',' ORDER BY function_name) FROM duckdb_functions()
+WHERE function_name IN ('xxh32', 'xxh64', 'xxh3_64', 'xxh3_128', 'xxh3_128_hex', 'rapidhash', 'rapidhash_micro',
+  'rapidhash_nano', 'murmurhash3_32', 'murmurhash3_128', 'murmurhash3_x64_128', 'wyhash', 'komihash', 'siphash13',
+  'siphash24', 'crc32c', 'fnv1a_32', 'fnv1a_64', 'farm_fingerprint', 'spark_hash', 'spark_xxhash64',
+  'kafka_murmur2', 'kafka_partition', 'clickhouse_cityhash64', 'iceberg_hash', 'iceberg_bucket', 'jump_hash');
+----
+clickhouse_cityhash64,crc32c,farm_fingerprint,fnv1a_32,fnv1a_64,iceberg_bucket,iceberg_hash,jump_hash,kafka_murmur2,kafka_partition,komihash,murmurhash3_128,murmurhash3_32,murmurhash3_x64_128,rapidhash,rapidhash_micro,rapidhash_nano,siphash13,siphash24,spark_hash,spark_xxhash64,wyhash,xxh32,xxh3_128,xxh3_128_hex,xxh3_64,xxh64
+
+# No overload lacks a description, an example or a category, or reports positional col<N> parameter names.
+query I
+SELECT count(*) FROM duckdb_functions()
+WHERE function_name IN ('xxh32', 'xxh64', 'xxh3_64', 'xxh3_128', 'xxh3_128_hex', 'rapidhash', 'rapidhash_micro',
+  'rapidhash_nano', 'murmurhash3_32', 'murmurhash3_128', 'murmurhash3_x64_128', 'wyhash', 'komihash', 'siphash13',
+  'siphash24', 'crc32c', 'fnv1a_32', 'fnv1a_64', 'farm_fingerprint', 'spark_hash', 'spark_xxhash64',
+  'kafka_murmur2', 'kafka_partition', 'clickhouse_cityhash64', 'iceberg_hash', 'iceberg_bucket', 'jump_hash')
+  AND (description IS NULL OR description = ''
+       OR examples IS NULL OR len(examples) = 0
+       OR categories IS NULL OR NOT list_contains(categories, 'hash')
+       OR list_any_value(list_filter(parameters, lambda p: regexp_matches(p, '^col[0-9]+$'))) IS NOT NULL);
+----
+0
+
+# Hashes are deterministic, so they can be constant-folded and used in indexes and generated columns.
+query I
+SELECT DISTINCT stability FROM duckdb_functions()
+WHERE function_name IN ('xxh32', 'xxh64', 'xxh3_64', 'xxh3_128', 'xxh3_128_hex', 'rapidhash', 'rapidhash_micro',
+  'rapidhash_nano', 'murmurhash3_32', 'murmurhash3_128', 'murmurhash3_x64_128', 'wyhash', 'komihash', 'siphash13',
+  'siphash24', 'crc32c', 'fnv1a_32', 'fnv1a_64', 'farm_fingerprint', 'spark_hash', 'spark_xxhash64',
+  'kafka_murmur2', 'kafka_partition', 'clickhouse_cityhash64', 'iceberg_hash', 'iceberg_bucket', 'jump_hash');
+----
+CONSISTENT
